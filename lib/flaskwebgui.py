@@ -1,0 +1,436 @@
+﻿import logging
+import os
+import platform
+import shutil
+import signal
+import socketserver
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+import webbrowser
+from dataclasses import dataclass
+from multiprocessing import Process
+from threading import Thread
+from typing import Any, Callable, Dict, List, Union
+
+import psutil
+
+# Determine if we're in packaged/production mode
+is_frozen = getattr(sys, "frozen", False)
+is_debug = os.environ.get("DEBUG", "true").lower() == "true"
+
+logger = logging.getLogger("flaskwebgui")
+if not logger.handlers:
+    default_level = "INFO" if (is_frozen or not is_debug) else "DEBUG"
+    log_level_str = os.environ.get("FLASKWEBGUI_LOG_LEVEL", default_level).upper()
+    log_level = getattr(logging, log_level_str, logging.WARNING)
+    logging.basicConfig(level=log_level, format="[FLASKWEBGUI] %(levelname)s - %(asctime)s - %(message)s")
+
+
+FLASKWEBGUI_USED_PORT = None
+FLASKWEBGUI_BROWSER_PROCESS = None
+
+
+def get_default_browser_name() -> str:
+    """Return the preferred browser name when one can be resolved."""
+    try:
+        browser = webbrowser.get()
+        return getattr(browser, "name", "")
+    except Exception:
+        return ""
+
+
+DEFAULT_BROWSER = get_default_browser_name()
+OPERATING_SYSTEM = platform.system().lower()
+PY = "python3" if OPERATING_SYSTEM in ["linux", "darwin"] else "python"
+
+
+linux_browser_paths = [
+    r"/usr/bin/google-chrome",
+    r"/usr/bin/microsoft-edge",
+    r"/usr/bin/brave-browser",
+    r"/usr/bin/chromium",
+    # Web browsers installed via flatpak portals
+    r"/run/host/usr/bin/google-chrome",
+    r"/run/host/usr/bin/microsoft-edge",
+    r"/run/host/usr/bin/brave-browser",
+    r"/run/host/usr/bin/chromium",
+    # Web browsers installed via snap
+    r"/snap/bin/chromium",
+    r"/snap/bin/brave-browser",
+    r"/snap/bin/google-chrome",
+    r"/snap/bin/microsoft-edge",
+]
+
+mac_browser_paths = [
+    r"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    r"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    r"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+]
+
+windows_browser_paths = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+]
+
+
+def get_free_port():
+    with socketserver.TCPServer(("localhost", 0), None) as s:
+        free_port = s.server_address[1]
+    return free_port
+
+
+def kill_port(port: int):
+    for proc in psutil.process_iter():
+        try:
+            for conns in proc.net_connections(kind="inet"):
+                if conns.laddr.port == port:
+                    proc.send_signal(signal.SIGTERM)
+        except psutil.AccessDenied:
+            continue
+
+
+def close_application():
+    if FLASKWEBGUI_BROWSER_PROCESS is not None:
+        FLASKWEBGUI_BROWSER_PROCESS.terminate()
+
+    kill_port(FLASKWEBGUI_USED_PORT)
+
+
+def find_browser_in_paths(browser_paths: List[str]):
+    compatible_browser_path = None
+    for path in browser_paths:
+        if not os.path.exists(path):
+            continue
+
+        if compatible_browser_path is None:
+            compatible_browser_path = path
+
+        if DEFAULT_BROWSER in path:
+            return path
+
+    return compatible_browser_path
+
+
+browser_path_dispacher: Dict[str, Callable[[], str]] = {
+    "windows": lambda: find_browser_in_paths(windows_browser_paths),
+    "linux": lambda: find_browser_in_paths(linux_browser_paths),
+    "darwin": lambda: find_browser_in_paths(mac_browser_paths),
+}
+
+
+class BaseDefaultServer:
+    server: Callable
+    get_server_kwargs: Callable
+
+
+class DefaultServerFastApi:
+    @staticmethod
+    def get_server_kwargs(**kwargs):
+        server_kwargs = {"app": kwargs.get("app"), "port": kwargs.get("port")}
+        return server_kwargs
+
+    @staticmethod
+    def server(**server_kwargs):
+        import uvicorn
+
+        uvicorn.run(**server_kwargs)
+
+
+class DefaultServerFlask:
+    @staticmethod
+    def get_server_kwargs(**kwargs):
+        return {"app": kwargs.get("app"), "port": kwargs.get("port")}
+
+    @staticmethod
+    def server(**server_kwargs):
+        app = server_kwargs.pop("app", None)
+        server_kwargs.pop("debug", None)
+
+        try:
+            import waitress
+
+            waitress.serve(app, **server_kwargs)
+        except Exception:
+            app.run(**server_kwargs)
+
+
+class DefaultServerDjango:
+    @staticmethod
+    def get_server_kwargs(**kwargs):
+        return {"app": kwargs["app"], "port": kwargs["port"]}
+
+    @staticmethod
+    def server(**server_kwargs):
+        import waitress
+        from whitenoise import WhiteNoise
+
+        application = WhiteNoise(server_kwargs["app"])
+        server_kwargs.pop("app")
+
+        waitress.serve(application, threads=100, **server_kwargs)
+
+
+class DefaultServerFlaskSocketIO:
+    @staticmethod
+    def get_server_kwargs(**kwargs):
+        return {
+            "app": kwargs.get("app"),
+            "flask_socketio": kwargs.get("flask_socketio"),
+            "port": kwargs.get("port"),
+        }
+
+    @staticmethod
+    def server(**server_kwargs):
+        server_kwargs["flask_socketio"].run(
+            server_kwargs["app"],
+            port=server_kwargs["port"],
+            allow_unsafe_werkzeug=True,  # required for Flask-SocketIO >=5.3.0
+        )
+
+
+webserver_dispacher: Dict[str, BaseDefaultServer] = {
+    "fastapi": DefaultServerFastApi,
+    "flask": DefaultServerFlask,
+    "flask_socketio": DefaultServerFlaskSocketIO,
+    "django": DefaultServerDjango,
+}
+
+
+@dataclass
+class FlaskUI:
+    server: Union[str, Callable[[Any], None]]
+    server_kwargs: dict = None
+    app: Any = None
+    port: int = None
+    width: int = None
+    height: int = None
+    fullscreen: bool = True
+    on_startup: Callable = None
+    on_shutdown: Callable = None
+    extra_flags: List[str] = None
+    browser_path: str = None
+    browser_command: List[str] = None
+    socketio: Any = None
+    profile_dir_prefix: str = "flaskwebgui"
+    app_mode: bool = True
+    browser_pid: int = None
+    auto_close: bool = True
+
+    def __post_init__(self):
+        self.__keyboard_interrupt = False
+        global FLASKWEBGUI_USED_PORT
+
+        if self.port is None:
+            self.port = self.server_kwargs.get("port") if self.server_kwargs else get_free_port()
+
+        FLASKWEBGUI_USED_PORT = self.port
+
+        if isinstance(self.server, str):
+            default_server = webserver_dispacher[self.server]
+            self.server = default_server.server
+            self.server_kwargs = self.server_kwargs or default_server.get_server_kwargs(
+                app=self.app, port=self.port, flask_socketio=self.socketio
+            )
+
+        self.profile_dir = os.path.join(tempfile.gettempdir(), self.profile_dir_prefix + uuid.uuid4().hex)
+        self.url = f"http://127.0.0.1:{self.port}"
+        self.app_url = self.url
+
+        # Create loading page
+        os.makedirs(self.profile_dir, exist_ok=True)
+        loading_page_path = os.path.join(self.profile_dir, "loading.html")
+        import pathlib
+
+        self.create_loading_page(loading_page_path, self.app_url)
+        self.url = pathlib.Path(loading_page_path).as_uri()
+
+        self.browser_path = self.browser_path or browser_path_dispacher.get(OPERATING_SYSTEM)()
+        self.browser_command = self.browser_command or self.get_browser_command()
+
+    def create_loading_page(self, path: str, target_url: str):
+        # Use pkgutil to get resource content, works with zipapps/wheels/exes
+        import pkgutil
+
+        try:
+            # "apps.searchium.searchium.lib" is the full package path based on file structure
+            # but usually relative import works if we know the package name.
+            # Best is to rely on __package__ if set, or guess.
+
+            # Since this file is in searchium/lib/flaskwebgui.py
+            packet_name = __name__.rsplit(".", 1)[0]
+            resource_data = pkgutil.get_data(packet_name, "loading_page.html")
+
+            if resource_data is None:
+                raise FileNotFoundError("Resource not found")
+
+            html_content = resource_data.decode("utf-8")
+
+        except Exception as e:
+            logger.warning(f"Could not load loading_page.html from package: {e}")
+            # Try filesystem fallback (useful for dev mode or if pkgutil fails)
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            template_path = os.path.join(current_dir, "loading_page.html")
+
+            if os.path.exists(template_path):
+                with open(template_path, "r", encoding="utf-8") as f:
+                    html_content = f.read()
+            else:
+                logger.warning(f"Loading page template not found at {template_path}")
+                html_content = (
+                    f'<html><body><h1>Loading...</h1><script>window.location.replace("{target_url}");'
+                    "</script></body></html>"
+                )
+
+        html_content = html_content.replace("__TARGET_URL__", target_url)
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+
+    def wait_for_server(self, url: str, timeout: float = 30.0):
+        """Wait for the server to be responsive before launching browser"""
+        import urllib.error
+        import urllib.request
+
+        logger.info(f"Waiting for server at {url}...")
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                with urllib.request.urlopen(url):
+                    logger.info("Server is ready!")
+                    return
+            except urllib.error.HTTPError:
+                # Server responded with 4xx/5xx, which means it's running
+                logger.info("Server is ready (responded with HTTP error)!")
+                return
+            except (urllib.error.URLError, ConnectionError):
+                pass
+            except Exception as e:
+                logger.debug(f"Server check failed: {e}")
+
+            time.sleep(0.2)
+
+        logger.warning(f"Timeout waiting for server at {url} after {timeout}s")
+
+    def get_browser_command(self):
+        # https://peter.sh/experiments/chromium-command-line-switches/
+
+        flags = [
+            self.browser_path,
+            f"--user-data-dir={self.profile_dir}",
+            "--new-window",
+            "--no-default-browser-check",
+            "--allow-insecure-localhost",
+            "--no-first-run",
+            "--disable-sync",
+        ]
+
+        if self.width and self.height and self.app_mode:
+            flags.extend([f"--window-size={self.width},{self.height}"])
+        elif self.fullscreen:
+            flags.extend(["--start-maximized"])
+
+        if self.extra_flags:
+            flags = flags + self.extra_flags
+
+        if self.app_mode:
+            flags.append(f"--app={self.url}")
+        else:
+            flags.extend(["--guest", self.url])
+
+        return flags
+
+    def start_browser(self, server_process: Union[Thread, Process]):
+        logger.info(f"Command: {' '.join(self.browser_command)}")
+
+        if not self.url.startswith("file://"):
+            # Wait for server to be ready before opening browser if not using loading page
+            self.wait_for_server(self.url)
+
+        global FLASKWEBGUI_BROWSER_PROCESS
+
+        FLASKWEBGUI_BROWSER_PROCESS = subprocess.Popen(self.browser_command)
+        self.browser_pid = FLASKWEBGUI_BROWSER_PROCESS.pid
+
+        # On Windows, Edge launches a child process and the initial launcher
+        # exits immediately, so Popen.wait() would return instantly.
+        # We sleep for a long time and only trigger shutdown when the user
+        # closes the terminal (KeyboardInterrupt) or explicitly stops the app.
+        try:
+            child_pid = self.browser_pid
+            while True:
+                time.sleep(5)
+                # Check if any Edge window is still open for our URL
+                try:
+                    proc = psutil.Process(child_pid)
+                    if not proc.is_running():
+                        # On Windows, Edge spawns child processes.
+                        # Try to find the actual running Edge child.
+                        children = proc.children(recursive=True)
+                        if children:
+                            child_pid = children[0].pid
+                            continue
+                        break
+                except psutil.NoSuchProcess:
+                    # Process gone вЂ” look for any Edge with our --app flag
+                    found = False
+                    for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+                        try:
+                            if p.info['name'] and 'msedge' in p.info['name'].lower():
+                                cmdline = p.info.get('cmdline') or []
+                                if any('--app=' in arg for arg in cmdline):
+                                    child_pid = p.info['pid']
+                                    found = True
+                                    break
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+                    if not found:
+                        break
+        except KeyboardInterrupt:
+            pass
+
+        if not self.auto_close:
+            return
+
+        if self.browser_path is None:
+            while self.__keyboard_interrupt is False:
+                time.sleep(1)
+
+        if isinstance(server_process, Process):
+            if self.on_shutdown is not None:
+                self.on_shutdown()
+            self.browser_pid = None
+            shutil.rmtree(self.profile_dir, ignore_errors=True)
+            server_process.kill()
+        else:
+            if self.on_shutdown is not None:
+                self.on_shutdown()
+            self.browser_pid = None
+            shutil.rmtree(self.profile_dir, ignore_errors=True)
+            kill_port(self.port)
+
+    def run(self):
+        if self.on_startup is not None:
+            self.on_startup()
+
+        if OPERATING_SYSTEM == "darwin":
+            server_process = Process(target=self.server, kwargs=self.server_kwargs or {})
+        else:
+            server_process = Thread(target=self.server, kwargs=self.server_kwargs or {})
+
+        browser_thread = Thread(target=self.start_browser, args=(server_process,))
+
+        try:
+            server_process.start()
+            browser_thread.start()
+            server_process.join()
+            browser_thread.join()
+        except KeyboardInterrupt:
+            self.__keyboard_interrupt = True
+            logger.info("Stopped")
+
+        return server_process, browser_thread

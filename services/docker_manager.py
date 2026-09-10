@@ -1,0 +1,964 @@
+﻿"""
+Docker Manager Service - Manages docker-compose lifecycle and container monitoring
+"""
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from searchium.core.config import settings
+from searchium.core.logging import logger
+
+
+class DockerManager:
+    """Manages docker-compose services for Searchium"""
+
+    def __init__(self, compose_file_path: Optional[str] = None, use_gpu: Optional[bool] = None):
+        """
+        Initialize Docker Manager
+
+        Args:
+            compose_file_path: Path to docker-compose.yml file
+            use_gpu: Force GPU mode on/off. If None, auto-detect.
+        """
+        # Detect GPU mode first
+        if use_gpu is None:
+            from searchium.utils.gpu_detector import should_use_gpu_mode
+
+            self.use_gpu = should_use_gpu_mode()
+        else:
+            self.use_gpu = use_gpu
+
+        # Select compose file based on GPU mode
+        if compose_file_path:
+            self.compose_file = Path(compose_file_path)
+        else:
+            # Locating docker-compose.yml (now consistently in searchium/docker-compose.yml)
+            try:
+                from importlib.resources import files
+
+                # Determine compose filename based on GPU mode
+                compose_filename = "docker-compose.gpu.yml" if self.use_gpu else "docker-compose.yml"
+
+                # Check inside the searchium package (installed mode or proper package structure)
+                pkg_compose = files("searchium") / compose_filename
+                if pkg_compose.is_file():
+                    self.compose_file = Path(pkg_compose)
+                else:
+                    # Fallback for dev/source mode
+                    # Location: searchium/services/docker_manager.py -> searchium/docker-compose.yml
+                    # Go up 2 levels: services -> searchium
+                    dev_compose = Path(__file__).parent.parent / compose_filename
+                    if dev_compose.exists():
+                        self.compose_file = dev_compose
+                    else:
+                        # If GPU file not found, fall back to CPU mode
+                        if self.use_gpu:
+                            logger.warning(f"GPU compose file not found: {compose_filename}, falling back to CPU mode")
+                            self.use_gpu = False
+                            compose_filename = "docker-compose.yml"
+                            dev_compose = Path(__file__).parent.parent / compose_filename
+                            if dev_compose.exists():
+                                self.compose_file = dev_compose
+                            else:
+                                raise FileNotFoundError(
+                                    "docker-compose.yml not found in package resources or source tree"
+                                )
+                        else:
+                            raise FileNotFoundError("docker-compose.yml not found in package resources or source tree")
+            except Exception as e:
+                # Fallback purely on file path relative to this file
+                compose_filename = "docker-compose.gpu.yml" if self.use_gpu else "docker-compose.yml"
+                dev_compose = Path(__file__).parent.parent / compose_filename
+                if dev_compose.exists():
+                    self.compose_file = dev_compose
+                else:
+                    # If GPU file not found, fall back to CPU mode
+                    if self.use_gpu:
+                        logger.warning(f"GPU compose file not found, falling back to CPU mode: {e}")
+                        self.use_gpu = False
+                        dev_compose = Path(__file__).parent.parent / "docker-compose.yml"
+                        if dev_compose.exists():
+                            self.compose_file = dev_compose
+                        else:
+                            logger.error(f"Failed to locate docker-compose.yml: {e}")
+                            # Last ditch effort (though likely to fail if file is gone)
+                            self.compose_file = Path("docker-compose.yml")
+                    else:
+                        logger.error(f"Failed to locate docker-compose.yml: {e}")
+                        # Last ditch effort (though likely to fail if file is gone)
+                        self.compose_file = Path("docker-compose.yml")
+
+        # Store as single-item list for compatibility with _build_compose_command
+        self.compose_files = [self.compose_file]
+
+        # Log selected mode
+        if self.use_gpu:
+            logger.info(f"рџЋ® GPU mode enabled - using GPU compose file: {self.compose_file}")
+        else:
+            logger.info(f"рџ’» CPU mode - using standard compose file: {self.compose_file}")
+
+        self.docker_cmd = self._detect_docker_command()
+        self._log_buffers: Dict[str, List[str]] = {}
+
+    def _detect_docker_command(self) -> Optional[str]:
+        """
+        Detect available docker command
+
+        Returns:
+            Command name or full path to docker executable, or None if not found
+        """
+        # 1. Check PATH first
+        found = shutil.which("docker")
+        if found:
+            return found
+
+        # 2. On Windows, check common Docker Desktop install locations
+        #    even if they are not in PATH. When found, prepend the
+        #    directory to PATH so that 'docker compose' (plugin) resolves.
+        import sys
+
+        if sys.platform == "win32":
+            candidate_dirs = []
+            # Docker Desktop per-user install (MSIX / AppData)
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            if local_app_data:
+                candidate_dirs.append(os.path.join(local_app_data, "Programs", "DockerDesktop", "resources", "bin"))
+            # Docker Desktop machine-wide install
+            program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+            candidate_dirs.append(os.path.join(program_files, "Docker", "Docker", "resources", "bin"))
+            program_files_x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+            candidate_dirs.append(os.path.join(program_files_x86, "Docker", "Docker", "resources", "bin"))
+
+            for d in candidate_dirs:
+                exe = os.path.join(d, "docker.exe")
+                if os.path.isfile(exe):
+                    # Ensure docker's directory is on PATH so compose plugin resolves
+                    if d not in os.environ.get("PATH", ""):
+                        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+                        logger.info(f"Added Docker Desktop to PATH: {d}")
+                    return exe
+
+        return None
+
+    def _get_friendly_error_message(self, error_msg: str) -> Optional[str]:
+        """
+        Check for common Docker connection errors and return a friendly message.
+
+        Args:
+            error_msg: The error message string to check
+
+        Returns:
+            Friendly error message if a known connection error is found, else None
+        """
+        error_msg_lower = error_msg.lower()
+        is_connection_error = (
+            "the system cannot find the file specified" in error_msg_lower
+            or "connection refused" in error_msg_lower
+            or "error while fetching server api version" in error_msg_lower
+            or "error during connect" in error_msg_lower
+            or "is the docker daemon running" in error_msg_lower
+        )
+
+        if is_connection_error:
+            return "Docker is not reachable. If you are using Docker Desktop, please start it and try again."
+
+        if "permission denied" in error_msg_lower:
+            return (
+                "Permissions error: You may need to add your user to the 'docker' group (linux) "
+                "or run as administrator."
+            )
+
+        return None
+
+    def is_docker_available(self) -> bool:
+        """Check if Docker is installed"""
+        return self.docker_cmd is not None
+
+    def get_docker_info(self) -> Dict[str, str]:
+        """
+        Get information about the docker installation
+
+        Returns:
+            Dictionary with docker info (available, command, version, error)
+        """
+        if not self.docker_cmd:
+            return {"available": False, "command": None, "error": "Docker not found"}
+
+        try:
+            # Get docker version
+            result = subprocess.run(
+                [self.docker_cmd, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            version = result.stdout.strip() if result.returncode == 0 else "Unknown"
+
+            return {
+                "available": True,
+                "command": self.docker_cmd,
+                "version": version,
+                "compose_file": str(self.compose_file),
+                "compose_exists": self.compose_file.exists(),
+            }
+        except Exception as e:
+            logger.error(f"Error getting docker info: {e}")
+            return {
+                "available": False,
+                "command": self.docker_cmd,
+                "error": str(e),
+            }
+
+    def _build_compose_command(self, *args) -> List[str]:
+        """
+        Build docker-compose command with selected compose file.
+
+        Args:
+            *args: Additional command arguments (e.g., 'up', '-d')
+
+        Returns:
+            Complete command list ready for subprocess
+        """
+        cmd = [self.docker_cmd, "compose"]
+
+        # Single compose file (no overlay merging)
+        cmd.extend(["-f", str(self.compose_file)])
+
+        # Add remaining arguments
+        cmd.extend(args)
+        return cmd
+
+    def _get_images_from_compose(self) -> List[str]:
+        """
+        Parse docker-compose.yml to extract image names
+
+        Returns:
+            List of image names
+        """
+        if not self.compose_file.exists():
+            return []
+
+        try:
+            import yaml
+
+            with open(self.compose_file) as f:
+                compose_data = yaml.safe_load(f)
+
+            images = []
+            services = compose_data.get("services", {})
+            for service_name, service_config in services.items():
+                if "image" in service_config:
+                    images.append(service_config["image"])
+            return images
+        except Exception as e:
+            logger.error(f"Error parsing docker-compose.yml: {e}")
+            return []
+
+    def check_required_images(self) -> Dict[str, any]:
+        """
+        Check if all required images from docker-compose are present locally
+
+        Returns:
+            Dictionary with status of images
+        """
+        if not self.docker_cmd:
+            return {"success": False, "error": "Docker not found"}
+
+        images = self._get_images_from_compose()
+        if not images:
+            return {"success": False, "error": "No images found in docker-compose.yml"}
+
+        missing_images = []
+        present_images = []
+
+        try:
+            # Get list of local images
+            # format: repository:tag
+            cmd = [self.docker_cmd, "images", "--format", "{{.Repository}}:{{.Tag}}"]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr or result.stdout
+
+                # Check for friendly error
+                friendly_msg = self._get_friendly_error_message(error_msg)
+
+                logger.error(f"Failed to list images: {result.stderr}")
+                return {"success": False, "error": friendly_msg or f"Failed to list images: {result.stderr}"}
+
+            local_images = set(result.stdout.strip().split("\n"))
+
+            # Also add "latest" tag implicit handling if needed, but safer to match exactly what's in compose
+            # Some compose files use short names, docker images might output fulll names.
+            # We'll do a basic check.
+
+            for required_image in images:
+                # Handle cases where :latest might be implicit in one place but explicit in another
+                # But typically docker-compose pulls what is specified.
+
+                # Check for exact match first
+                found = False
+                if required_image in local_images:
+                    found = True
+
+                # If not found, try to match loosely (e.g. if image has no tag, assume latest)
+                if not found and ":" not in required_image:
+                    if f"{required_image}:latest" in local_images:
+                        found = True
+
+                if found:
+                    present_images.append(required_image)
+                else:
+                    missing_images.append(required_image)
+
+            return {
+                "success": True,
+                "all_present": len(missing_images) == 0,
+                "missing": missing_images,
+                "present": present_images,
+                "total_required": len(images),
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking required images: {e}")
+            return {"success": False, "error": str(e)}
+
+    def pull_images_with_progress(self, progress_callback=None):
+        """
+        Pull docker images with real progress tracking using Docker SDK
+
+        Args:
+            progress_callback: Callback function(data) where data contains:
+                - image: image being pulled
+                - layer_id: layer being downloaded
+                - status: current status (Pulling, Downloading, Extracting, etc.)
+                - current: bytes downloaded (for progress calculation)
+                - total: total bytes (for progress calculation)
+                - progress_percent: calculated percentage for current layer
+                - overall_percent: overall progress across all layers
+
+        Yields progress events for SSE streaming
+        """
+        if not self.docker_cmd:
+            if progress_callback:
+                progress_callback({"error": "Docker not found. Please install Docker to continue."})
+            return {"success": False, "error": "Docker not found"}
+
+        if not self.compose_file.exists():
+            if progress_callback:
+                progress_callback({"error": f"docker-compose.yml not found at {self.compose_file}"})
+            return {"success": False, "error": "docker-compose.yml not found"}
+
+        images = self._get_images_from_compose()
+        if not images:
+            if progress_callback:
+                progress_callback({"error": "No images found in docker-compose.yml"})
+            return {"success": False, "error": "No images found"}
+
+        try:
+            # Use Docker SDK for image pulling
+            return self._pull_images_docker_sdk(images, progress_callback)
+
+        except ImportError as e:
+            msg = "Docker SDK not installed"
+            logger.error(f"{msg}: {e}")
+            if progress_callback:
+                progress_callback({"error": msg})
+            return {"success": False, "error": msg}
+
+        except Exception as e:
+            logger.error(f"Error pulling images: {e}")
+            if progress_callback:
+                progress_callback({"error": str(e)})
+            return {"success": False, "error": str(e)}
+
+    def check_docker_connection(self) -> Dict[str, any]:
+        """
+        Check if we can actually connect to the Docker daemon.
+
+        Uses a two-phase approach:
+        1. Try the Docker SDK (docker.from_env()) which reads DOCKER_HOST / Docker SDK env vars.
+        2. If that fails, fall back to running `docker info` via CLI subprocess, which respects
+           Docker Desktop contexts and system-level DOCKER_HOST configurations.
+
+        This handles users pointing the Docker CLI at a remote daemon (e.g. VirtualBox VM)
+        where the SDK may not automatically pick up the active Docker context.
+
+        Returns:
+            Dictionary with success and error message
+        """
+        if not self.docker_cmd:
+            return {"success": False, "error": "Docker not found"}
+
+        # Try Docker SDK
+        sdk_error: Optional[str] = None
+        try:
+            import docker
+
+            client = docker.from_env()
+            client.ping()
+            client.close()
+            return {"success": True}
+        except Exception as e:
+            sdk_error = str(e)
+            logger.debug(f"Docker SDK connection failed: {sdk_error} вЂ” will try CLI fallback")
+
+        # CLI fallback via `docker info` вЂ” respects Docker contexts and system-level config
+        try:
+            result = subprocess.run(
+                [self.docker_cmd, "info"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("Docker daemon reachable via CLI (SDK fallback succeeded)")
+                return {"success": True}
+
+            # CLI also failed вЂ” build the best error message we can
+            cli_error = result.stderr or result.stdout or sdk_error or "unknown error"
+            friendly_msg = self._get_friendly_error_message(cli_error) or self._get_friendly_error_message(
+                sdk_error or ""
+            )
+            return {
+                "success": False,
+                "error": friendly_msg or f"Failed to connect to Docker: {cli_error}",
+            }
+        except Exception as cli_exc:
+            # Both SDK and CLI failed; surface the clearest error
+            error_msg = sdk_error or str(cli_exc)
+            friendly_msg = self._get_friendly_error_message(error_msg)
+            return {
+                "success": False,
+                "error": friendly_msg or f"Failed to connect to Docker: {error_msg}",
+            }
+
+    def _pull_images_docker_sdk(self, images: List[str], progress_callback=None):
+        """Pull images using Docker SDK with progress streaming (non-blocking)"""
+        import threading
+        import time
+        from queue import Queue as ThreadQueue
+
+        import docker
+
+        # Thread-safe queue for progress events
+        progress_queue = ThreadQueue()
+
+        def pull_in_thread():
+            """Run synchronous Docker SDK pull in thread to avoid blocking event loop"""
+            try:
+                try:
+                    client = docker.from_env()
+                except Exception as e:
+                    # Check for common "Docker not running" errors
+                    error_msg = str(e)
+                    friendly_msg = self._get_friendly_error_message(error_msg)
+
+                    if friendly_msg:
+                        logger.warning(f"Docker connection failed: {e}")
+                        progress_queue.put({"error": friendly_msg})
+                    else:
+                        logger.error(f"Failed to connect to Docker: {e}")
+                        progress_queue.put({"error": str(e)})
+
+                    progress_queue.put(None)  # Signal completion
+                    return
+
+                total_images = len(images)
+                completed_images = 0
+
+                for image in images:
+                    logger.info(f"Pulling image (Docker SDK): {image}")
+                    progress_queue.put({"status": "Starting", "image": image, "message": f"Pulling {image}..."})
+
+                    layer_progress = {}
+
+                    try:
+                        # This is synchronous and blocks, but we're in a thread so it's OK
+                        for event in client.api.pull(image, stream=True, decode=True):
+                            layer_id = event.get("id", "")
+                            status = event.get("status", "")
+                            progress_detail = event.get("progressDetail", {})
+
+                            current = progress_detail.get("current", 0)
+                            total = progress_detail.get("total", 0)
+
+                            if layer_id and total > 0:
+                                layer_progress[layer_id] = {"current": current, "total": total}
+
+                            total_bytes = sum(lp.get("total", 0) for lp in layer_progress.values())
+                            current_bytes = sum(lp.get("current", 0) for lp in layer_progress.values())
+                            layer_percent = (current_bytes / total_bytes * 100) if total_bytes > 0 else 0
+                            layer_specific_percent = (current / total * 100) if total > 0 else 0
+                            overall_percent = ((completed_images + layer_percent / 100) / total_images) * 100
+
+                            progress_queue.put(
+                                {
+                                    "image": image,
+                                    "layer_id": layer_id,
+                                    "status": status,
+                                    "current": current,
+                                    "total": total,
+                                    "progress_percent": round(layer_specific_percent, 1),
+                                    "image_percent": round(layer_percent, 1),
+                                    "overall_percent": round(overall_percent, 1),
+                                    "progress_text": event.get("progress", ""),
+                                }
+                            )
+
+                    except docker.errors.APIError as e:
+                        logger.error(f"Error pulling {image}: {e}")
+                        progress_queue.put({"error": f"Failed to pull {image}: {str(e)}"})
+                        progress_queue.put(None)  # Signal completion
+                        return
+
+                    completed_images += 1
+                    progress_queue.put(
+                        {
+                            "status": "Complete",
+                            "image": image,
+                            "message": f"Pulled {image} successfully",
+                            "overall_percent": round((completed_images / total_images) * 100, 1),
+                        }
+                    )
+
+                client.close()
+                progress_queue.put(
+                    {
+                        "complete": True,
+                        "message": "All images pulled successfully",
+                        "overall_percent": 100,
+                    }
+                )
+                progress_queue.put(None)  # Signal completion
+
+            except Exception as e:
+                logger.error(f"Error in pull thread: {e}", exc_info=True)
+                progress_queue.put({"error": str(e)})
+                progress_queue.put(None)
+
+        # Start pull in background thread
+        pull_thread = threading.Thread(target=pull_in_thread, daemon=True)
+        pull_thread.start()
+
+        # Stream progress events from queue to callback
+        while True:
+            # Check queue in a non-blocking way
+            time.sleep(0.01)  # Small delay to avoid busy-waiting
+
+            while not progress_queue.empty():
+                try:
+                    data = progress_queue.get_nowait()
+                    if data is None:  # Completion signal
+                        pull_thread.join(timeout=1.0)
+                        return {"success": True, "message": "All images pulled successfully"}
+
+                    if "error" in data:
+                        pull_thread.join(timeout=1.0)
+                        return {"success": False, "error": data["error"]}
+
+                    if progress_callback:
+                        progress_callback(data)
+
+                except Exception as e:
+                    logger.error(f"Error processing progress event: {e}")
+                    continue
+
+    def start_services(self) -> Dict[str, any]:
+        """
+        Start docker-compose services
+
+        Returns:
+            Dictionary with status and message
+        """
+        if not self.docker_cmd:
+            return {
+                "success": False,
+                "error": "Docker not found. Please install Docker to continue.",
+            }
+
+        if not self.compose_file.exists():
+            return {
+                "success": False,
+                "error": f"docker-compose.yml not found at {self.compose_file}",
+            }
+
+        try:
+            logger.debug(f"Starting docker-compose services from {self.compose_file}")
+
+            # Build compose command with all files
+            cmd = self._build_compose_command("up", "-d")
+
+            # Inject environment variables from app_paths
+            from searchium.core.paths import app_paths
+
+            env = os.environ.copy()
+            env.update(app_paths.get_env_vars())
+            # Inject dynamic API key
+            env["TYPESENSE_API_KEY"] = settings.typesense_api_key
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=self.compose_file.parent,
+                env=env,
+                timeout=60,
+            )
+
+            if result.returncode == 0:
+                logger.debug("Docker services started successfully")
+                return {
+                    "success": True,
+                    "message": "Docker services started successfully",
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+            else:
+                error_msg = result.stderr or result.stdout
+
+                # Check for friendly error
+                friendly_msg = self._get_friendly_error_message(error_msg)
+
+                logger.error(f"Failed to start docker services: {error_msg}")
+                return {
+                    "success": False,
+                    "error": friendly_msg or f"Failed to start docker services: {error_msg}",
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+
+        except Exception as e:
+            logger.error(f"Error starting docker services: {e}")
+            return {
+                "success": False,
+                "error": f"Error starting docker services: {str(e)}",
+            }
+
+    def stop_services(self) -> Dict[str, any]:
+        """
+        Stop docker-compose services
+
+        Returns:
+            Dictionary with status and message
+        """
+        if not self.docker_cmd:
+            return {"success": False, "error": "Docker not found"}
+
+        try:
+            logger.debug("Stopping docker-compose services")
+
+            cmd = self._build_compose_command("down")
+
+            # Inject environment variables from app_paths
+            from searchium.core.paths import app_paths
+
+            env = os.environ.copy()
+            env.update(app_paths.get_env_vars())
+            # Inject dynamic API key for consistency (though less critical for stop)
+            env["TYPESENSE_API_KEY"] = settings.typesense_api_key
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=self.compose_file.parent,
+                env=env,
+                timeout=60,
+            )
+
+            if result.returncode == 0:
+                logger.debug("Docker services stopped successfully")
+                return {
+                    "success": True,
+                    "message": "Docker services stopped successfully",
+                }
+            else:
+                error_msg = result.stderr or result.stdout
+                logger.warning(f"Error stopping docker services: {error_msg}")
+                return {
+                    "success": False,
+                    "error": f"Error stopping docker services: {error_msg}",
+                }
+
+        except Exception as e:
+            logger.error(f"Error stopping docker services: {e}")
+            return {
+                "success": False,
+                "error": f"Error stopping docker services: {str(e)}",
+            }
+
+    def get_services_status(self) -> Dict[str, any]:
+        """
+        Get status of docker-compose services
+
+        Returns:
+            Dictionary with service statuses
+        """
+        if not self.docker_cmd:
+            return {"success": False, "error": "Docker not found"}
+
+        try:
+            cmd = self._build_compose_command("ps", "--format", "json")
+
+            # Inject environment variables from app_paths
+            from searchium.core.paths import app_paths
+
+            env = os.environ.copy()
+            env.update(app_paths.get_env_vars())
+            env["TYPESENSE_API_KEY"] = settings.typesense_api_key
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=self.compose_file.parent,
+                env=env,
+                timeout=10,
+            )
+
+            if result.returncode == 0:
+                # Parse output
+                import json
+
+                output = result.stdout
+                services = []
+
+                # Docker compose v2 returns JSON
+                if output.strip():
+                    try:
+                        # Each line is a JSON object
+                        for line in output.strip().split("\n"):
+                            if line.strip():
+                                service_data = json.loads(line)
+                                services.append(
+                                    {
+                                        "name": service_data.get("Name", ""),
+                                        "service": service_data.get("Service", ""),
+                                        "state": service_data.get("State", ""),
+                                        "status": service_data.get("Status", ""),
+                                        "health": service_data.get("Health", ""),
+                                    }
+                                )
+                    except json.JSONDecodeError:
+                        # Fallback to text parsing if JSON fails
+                        logger.warning("Failed to parse docker ps JSON output")
+
+                # Check if any containers are actually running before performing HTTP health checks
+                # This prevents long timeouts on Windows when containers haven't started yet
+                any_running = any(s.get("state") == "running" for s in services)
+
+                # Only perform application-level health checks via HTTP if containers are running
+                if any_running:
+                    import time
+
+                    import httpx
+
+                    def check_service_health(
+                        name: str,
+                        url: str,
+                        headers: dict = None,
+                        timeout: float = 5.0,
+                        max_retries: int = 3,
+                        retry_delay: float = 1.0,
+                    ) -> bool:
+                        """
+                        Check if a service is actually responding to HTTP requests.
+                        Uses retry logic to handle slow container startup.
+
+                        Args:
+                            name: Service name for logging
+                            url: URL to check
+                            headers: Optional HTTP headers
+                            timeout: Timeout for each attempt in seconds
+                            max_retries: Number of retry attempts
+                            retry_delay: Delay between retries in seconds
+                        """
+                        for attempt in range(max_retries):
+                            try:
+                                with httpx.Client(timeout=timeout) as client:
+                                    resp = client.get(url, headers=headers or {})
+                                    healthy = resp.status_code < 400
+                                    if healthy:
+                                        logger.info(
+                                            f"Health check {name}: {url} -> status {resp.status_code}, healthy=True"
+                                        )
+                                        return True
+                                    logger.debug(f"Health check {name}: {url} -> status {resp.status_code}, unhealthy")
+                            except Exception as e:
+                                logger.debug(
+                                    f"Health check {name}: {url} -> attempt {attempt + 1}/{max_retries} failed: {e}"
+                                )
+
+                            # Wait before retry (except on last attempt)
+                            if attempt < max_retries - 1:
+                                time.sleep(retry_delay)
+
+                        logger.info(f"Health check {name}: {url} -> failed after {max_retries} attempts")
+                        return False
+
+                    # Check Tika
+                    tika_healthy = check_service_health("tika", f"{settings.tika_url}/version")
+
+                    # Check Typesense
+                    typesense_healthy = check_service_health(
+                        "typesense",
+                        f"{settings.typesense_url}/debug",
+                        headers={"X-TYPESENSE-API-KEY": settings.typesense_api_key},
+                    )
+                else:
+                    # Skip HTTP health checks when containers aren't running
+                    # This prevents long timeouts (15+ seconds on Windows) during startup
+                    logger.info("No containers running - skipping HTTP health checks")
+                    tika_healthy = False
+                    typesense_healthy = False
+
+                # Update services with actual health status
+                for service in services:
+                    service_name = service.get("service", "").lower()
+                    if "tika" in service_name:
+                        service["health"] = "healthy" if tika_healthy else "unhealthy"
+                    elif "typesense" in service_name:
+                        service["health"] = "healthy" if typesense_healthy else "unhealthy"
+
+                overall_healthy = all(s.get("health") == "healthy" for s in services) if services else False
+
+                return {
+                    "success": True,
+                    "services": services,
+                    "running": any(s.get("state") == "running" for s in services),
+                    "healthy": overall_healthy,
+                }
+            else:
+                error_msg = result.stderr or result.stdout
+
+                # Check for friendly error
+                friendly_msg = self._get_friendly_error_message(error_msg)
+
+                return {
+                    "success": False,
+                    "error": friendly_msg or f"Failed to get services status: {result.stderr}",
+                    "services": [],
+                    "running": False,
+                    "healthy": False,
+                }
+
+        except Exception as e:
+            logger.error(f"Error getting services status: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "services": [],
+                "running": False,
+                "healthy": False,
+            }
+
+    def get_container_logs(
+        self,
+        service_name: str,
+        tail: int = 100,
+        follow: bool = False,
+    ) -> subprocess.Popen:
+        """
+        Get logs from a specific container
+
+        Args:
+            service_name: Name of the service (e.g., 'typesense', 'tika')
+            tail: Number of lines to show from the end
+            follow: Whether to follow the logs (stream)
+
+        Returns:
+            Subprocess for streaming logs
+        """
+        if not self.docker_cmd:
+            raise RuntimeError("Docker not found")
+
+        cmd = [
+            self.docker_cmd,
+            "compose",
+            "-f",
+            str(self.compose_file),
+            "logs",
+            "--tail",
+            str(tail),
+        ]
+
+        if follow:
+            cmd.append("--follow")
+
+        cmd.append(service_name)
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=self.compose_file.parent,
+            text=True,
+        )
+
+        return process
+
+    def stream_all_logs(self, callback):
+        """
+        Stream logs from all containers
+
+        Args:
+            callback: Function to call with log lines
+        """
+        if not self.docker_cmd:
+            raise RuntimeError("Docker not found")
+
+        cmd = [
+            self.docker_cmd,
+            "compose",
+            "-f",
+            str(self.compose_file),
+            "logs",
+            "--follow",
+            "--tail",
+            "50",
+        ]
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=self.compose_file.parent,
+            text=True,
+        )
+
+        try:
+            for line in iter(process.stdout.readline, ""):
+                if not line:
+                    break
+                log_line = line.rstrip()
+                callback(log_line)
+
+        except Exception as e:
+            logger.error(f"Error streaming logs: {e}")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait()
+
+
+# Global docker manager instance
+_docker_manager: Optional[DockerManager] = None
+
+
+def get_docker_manager() -> DockerManager:
+    """Get the global docker manager instance"""
+    global _docker_manager
+    if _docker_manager is None:
+        _docker_manager = DockerManager()
+    return _docker_manager

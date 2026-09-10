@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "searchium"
+version = "0.2.0"
+description = "Desktop search engine with AI-powered semantic search, chat, and full-text indexing"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "zDEBRYrp"},
+]
+keywords = ["search", "semantic", "ai", "index", "files", "desktop"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Desktop Environment",
+    "Topic :: Text Processing :: Indexing",
+]
+
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "httpx>=0.24.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "sqlalchemy>=2.0.0",
+    "typesense>=1.0.0",
+    "tika>=3.0.0",
+    "chardet>=5.0.0",
+    "watchdog>=3.0.0",
+    "psutil>=5.9.0",
+    "Pillow>=9.0.0",
+    "platformdirs>=3.0.0",
+    "PyYAML>=6.0",
+    "huggingface-hub>=0.20.0",
+    "tqdm>=4.0.0",
+    "posthog>=3.0.0",
+    "alembic>=1.10.0",
+]
+
+[project.optional-dependencies]
+docker = ["docker>=6.0.0"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+searchium = "searchium.main:cli_main"
+
+[project.urls]
+Homepage = "https://github.com/zDEBRYrp/searchium"
+Repository = "https://github.com/zDEBRYrp/searchium"
+Issues = "https://github.com/zDEBRYrp/searchium/issues"
+
+[tool.setuptools.packages.find]
+include = ["searchium*"]
+
+[tool.setuptools.package-data]
+searchium = [
+    "frontend/dist/**/*",
+    "frontend/dist/assets/*.js",
+    "frontend/dist/assets/*.css",
+    "lib/*.html",
+    "api/v1/i18n/*.json",
+    "docker-compose*.yml",
+]

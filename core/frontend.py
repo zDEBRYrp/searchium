@@ -1,0 +1,170 @@
+﻿"""
+Frontend Routing Module
+
+Handles SPA routing, Vite dev server proxy, and static file serving.
+Extracted from main.py to improve maintainability.
+"""
+
+import os
+from typing import TYPE_CHECKING
+
+import httpx
+from fastapi import Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from searchium.core.config import settings
+from searchium.core.logging import logger
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+I18N_SCRIPT = """
+<script>
+(function(){
+  var lang = localStorage.getItem('fb-lang') || (navigator.language||'').slice(0,2);
+  if (lang !== 'ru' && lang !== 'en') lang = 'en';
+  localStorage.setItem('fb-lang', lang);
+  if (lang === 'en') return;
+
+  fetch('/api/v1/i18n/' + lang).then(function(r){return r.json()}).then(function(tr){
+    var map = {};
+    Object.keys(tr).forEach(function(k){ map[k.toLowerCase()] = tr[k]; });
+
+    function replaceText(node){
+      if (node.nodeType === 3){
+        var t = node.textContent.trim();
+        if (t && map[t.toLowerCase()]) node.textContent = map[t.toLowerCase()];
+      } else if (node.nodeType === 1 && node.tagName !== 'SCRIPT' && node.tagName !== 'STYLE'){
+        for (var i=0; i<node.childNodes.length; i++) replaceText(node.childNodes[i]);
+        if (node.placeholder){
+          var p = node.placeholder.toLowerCase();
+          if (map[p]) node.placeholder = map[p];
+        }
+        if (node.title){
+          var ti = node.title.toLowerCase();
+          if (map[ti]) node.title = map[ti];
+        }
+      }
+    }
+
+    var tries = 0;
+    function runReplace(){
+      replaceText(document.body);
+      if (++tries < 30) setTimeout(runReplace, 500);
+    }
+
+    if (document.body) runReplace();
+    else document.addEventListener('DOMContentLoaded', runReplace);
+  }).catch(function(){});
+})();
+</script>
+"""
+
+
+def setup_frontend_routes(app: "FastAPI", frontend_dist_path: str):
+    """
+    Set up all frontend routes for the application.
+
+    Args:
+        app: FastAPI application instance
+        frontend_dist_path: Path to the frontend dist directory
+    """
+    frontend_assets_path = os.path.join(frontend_dist_path, "assets")
+    frontend_themes_path = os.path.join(frontend_dist_path, "themes")
+
+    # Mount static assets if available
+    if os.path.exists(frontend_assets_path):
+        app.mount("/assets", StaticFiles(directory=frontend_assets_path), name="frontend_assets")
+
+    # Mount themes directory for PrimeReact themes
+    if os.path.exists(frontend_themes_path):
+        app.mount("/themes", StaticFiles(directory=frontend_themes_path), name="frontend_themes")
+
+    if not os.path.exists(frontend_dist_path):
+        return
+
+    @app.get("/icon.svg")
+    def serve_icon():
+        """Serve the application icon."""
+        icon_path = os.path.join(frontend_dist_path, "icon.svg")
+        if os.path.exists(icon_path):
+            return FileResponse(icon_path)
+        return JSONResponse(status_code=404, content={"error": "Icon not found"})
+
+    @app.get("/")
+    def serve_frontend(request: Request):
+        """Serve the frontend index page with i18n injection."""
+        if settings.debug:
+            return proxy_to_vite(request, "")
+
+        index_path = os.path.join(frontend_dist_path, "index.html")
+        if os.path.exists(index_path):
+            with open(index_path, "r", encoding="utf-8") as f:
+                html = f.read()
+            html = html.replace("</body>", I18N_SCRIPT + "</body>")
+            return HTMLResponse(content=html)
+        return {
+            "name": settings.app_name,
+            "version": settings.app_version,
+            "status": "running",
+        }
+
+    @app.get("/{full_path:path}")
+    def serve_spa(request: Request, full_path: str):
+        """
+        Serve the single-page application.
+        Handles all routes except for the API.
+        """
+        # Let the API router handle its own paths
+        if full_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"error": "API route not found"})
+
+        # Proxy to Vite Dev Server if in debug mode
+        if settings.debug:
+            return proxy_to_vite(request, full_path)
+
+        index_path = os.path.join(frontend_dist_path, "index.html")
+        if os.path.exists(index_path):
+            with open(index_path, "r", encoding="utf-8") as f:
+                html = f.read()
+            html = html.replace("</body>", I18N_SCRIPT + "</body>")
+            return HTMLResponse(content=html)
+
+        # Fallback for when the frontend is not built
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "Frontend not built. Run `npm run build` in the frontend directory.",
+                "path": full_path,
+            },
+        )
+
+
+def proxy_to_vite(request: Request, full_path: str):
+    """
+    Proxy requests to the Vite development server.
+
+    Args:
+        request: FastAPI request object
+        full_path: Path to proxy
+
+    Returns:
+        Response from Vite server or error response
+    """
+    target_url = f"{settings.frontend_dev_url}/{full_path}"
+    if not full_path or full_path == "index.html":
+        target_url = settings.frontend_dev_url
+
+    try:
+        params = dict(request.query_params)
+        with httpx.Client() as client:
+            resp = client.get(target_url, params=params)
+            from fastapi import Response
+
+            return Response(
+                content=resp.content, status_code=resp.status_code, media_type=resp.headers.get("content-type")
+            )
+    except Exception as e:
+        logger.error(f"Vite proxy error for {full_path}: {e}")
+        return JSONResponse(status_code=502, content={"error": "Vite dev server not accessible"})

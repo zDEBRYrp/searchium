@@ -1,0 +1,48 @@
+﻿from fastapi import APIRouter
+from pydantic import BaseModel
+
+from searchium.core.config import settings
+
+router = APIRouter()
+
+
+class AppConfig(BaseModel):
+    """Configuration exposed to the frontend"""
+
+    app_version: str
+    app_name: str
+    install_type: str
+    typesense: dict
+    posthog: dict
+
+
+@router.get("", response_model=AppConfig)
+def get_config():
+    """
+    Get application configuration required for the frontend.
+    This allows dynamic configuration (like API keys) to be passed to the UI.
+    """
+    from searchium.core.telemetry import telemetry
+    from searchium.services.typesense_client import get_typesense_client
+
+    client = get_typesense_client()
+    search_only_key = client.get_search_only_api_key()
+
+    return {
+        "app_version": settings.app_version,
+        "app_name": settings.app_name,
+        "install_type": telemetry.environment,
+        "typesense": {
+            "api_key": search_only_key,
+            "host": settings.typesense_host,
+            "port": settings.typesense_port,
+            "protocol": settings.typesense_protocol,
+            "collection_name": settings.typesense_collection_name,
+        },
+        "posthog": {
+            "enabled": settings.posthog_enabled,
+            "api_key": settings.posthog_project_api_key,
+            "host": settings.posthog_host,
+            "device_id": telemetry.distinct_id,  # Share device ID for unified sessions
+        },
+    }
