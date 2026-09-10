@@ -265,10 +265,7 @@ def health_monitoring_loop():
     """Background health monitoring loop."""
     from searchium.core.telemetry import telemetry
     from searchium.database.repositories import WizardStateRepository
-    from searchium.services.service_manager import get_service_manager
 
-    service_manager = get_service_manager()
-    docker_available = None
     while True:
         try:
             with db_session() as db:
@@ -276,18 +273,6 @@ def health_monitoring_loop():
                 if not wizard_state or not wizard_state.wizard_completed:
                     time.sleep(30)
                     continue
-
-            if docker_available is None:
-                try:
-                    from searchium.services.docker_manager import get_docker_manager
-                    dm = get_docker_manager()
-                    info = dm.get_docker_info()
-                    docker_available = info.get("available", False)
-                except Exception:
-                    docker_available = False
-
-            if docker_available:
-                service_manager.check_all_services_health()
 
             telemetry.check_heartbeat()
             time.sleep(30)

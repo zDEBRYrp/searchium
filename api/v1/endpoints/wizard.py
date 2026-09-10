@@ -161,10 +161,6 @@ def check_startup_requirements():
                 "wizard_started",
                 {
                     "start_step": result.get_first_failed_step(),
-                    "is_upgrade": result.is_upgrade,
-                    "docker_available": result.docker_available.passed,
-                    "docker_images": result.docker_images.passed,
-                    "services_healthy": result.services_healthy.passed,
                     "model_downloaded": result.model_downloaded.passed,
                     "collection_ready": result.collection_ready.passed,
                     "schema_current": result.schema_current.passed,
@@ -176,20 +172,8 @@ def check_startup_requirements():
             needs_wizard=result.needs_wizard,
             is_first_run=result.is_first_run,
             start_step=result.get_first_failed_step(),
-            is_upgrade=result.is_upgrade,
+            is_upgrade=False,
             checks={
-                "docker_available": {
-                    "passed": result.docker_available.passed,
-                    "message": result.docker_available.message,
-                },
-                "docker_images": {
-                    "passed": result.docker_images.passed,
-                    "message": result.docker_images.message,
-                },
-                "services_healthy": {
-                    "passed": result.services_healthy.passed,
-                    "message": result.services_healthy.message,
-                },
                 "model_downloaded": {
                     "passed": result.model_downloaded.passed,
                     "message": result.model_downloaded.message,

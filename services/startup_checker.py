@@ -1,5 +1,5 @@
 ﻿"""
-Startup Check Service - Validates all system requirements on app startup
+Startup Check Service - Validates system requirements on app startup
 """
 
 from dataclasses import dataclass
@@ -23,9 +23,6 @@ class CheckDetail:
 
 @dataclass
 class StartupCheckResult:
-    docker_available: CheckDetail
-    docker_images: CheckDetail
-    services_healthy: CheckDetail
     model_downloaded: CheckDetail
     db_migration_current: CheckDetail
     collection_ready: CheckDetail
@@ -34,7 +31,13 @@ class StartupCheckResult:
 
     @property
     def all_checks_passed(self) -> bool:
-        return True
+        return all([
+            self.model_downloaded.passed,
+            self.db_migration_current.passed,
+            self.collection_ready.passed,
+            self.schema_current.passed,
+            self.wizard_reset.passed,
+        ])
 
     @property
     def is_first_run(self) -> bool:
@@ -48,19 +51,15 @@ class StartupCheckResult:
             return True
         return False
 
-    @property
-    def is_upgrade(self) -> bool:
-        return False
-
     def get_first_failed_step(self) -> Optional[int]:
         if not self.wizard_reset.passed:
             return 0
         if not self.db_migration_current.passed:
-            return 3
+            return 1
         if not self.model_downloaded.passed:
-            return 4
+            return 2
         if not self.collection_ready.passed or not self.schema_current.passed:
-            return 5
+            return 3
         return None
 
 
@@ -71,23 +70,13 @@ class StartupChecker:
         from searchium.services.database_migrations import get_migration_service
         self.migration_service = get_migration_service()
 
-    def check_docker_available(self) -> CheckDetail:
-        return CheckDetail(passed=True, message="Docker not required")
-
-    def check_docker_images(self) -> CheckDetail:
-        return CheckDetail(passed=True, message="Docker not required")
-
-    def check_services_healthy(self) -> CheckDetail:
-        return CheckDetail(passed=True, message="Docker not required")
-
     def check_model_downloaded(self) -> CheckDetail:
         try:
             status = self.model_downloader.check_model_exists()
             if status.get("exists"):
                 return CheckDetail(passed=True, message="Embedding model ready")
-            else:
-                missing_count = len(status.get("missing_files", []))
-                return CheckDetail(passed=False, message=f"{missing_count} model file(s) missing")
+            missing_count = len(status.get("missing_files", []))
+            return CheckDetail(passed=False, message=f"{missing_count} model file(s) missing")
         except Exception as e:
             logger.error(f"Error checking model status: {e}")
             return CheckDetail(passed=False, message=f"Error: {str(e)}")
@@ -145,9 +134,6 @@ class StartupChecker:
         if not wizard_check.passed:
             logger.info("Wizard not completed - showing wizard")
             return StartupCheckResult(
-                docker_available=CheckDetail(passed=True, message="Skipped"),
-                docker_images=CheckDetail(passed=True, message="Skipped"),
-                services_healthy=CheckDetail(passed=True, message="Skipped"),
                 model_downloaded=model_check,
                 db_migration_current=db_migration_check,
                 collection_ready=CheckDetail(passed=True, message="Skipped"),
@@ -163,9 +149,6 @@ class StartupChecker:
             schema_check = CheckDetail(passed=True, message=f"Skipped: {e}")
 
         check_result = StartupCheckResult(
-            docker_available=CheckDetail(passed=True, message="Docker not required"),
-            docker_images=CheckDetail(passed=True, message="Docker not required"),
-            services_healthy=CheckDetail(passed=True, message="Docker not required"),
             model_downloaded=model_check,
             db_migration_current=db_migration_check,
             collection_ready=collection_check,
