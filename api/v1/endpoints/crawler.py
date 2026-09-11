@@ -316,7 +316,7 @@ def get_crawler_stats(db: Session = Depends(get_db)):
             total_indexed = ts_stats.get("num_documents", 0)
             healthy = True
         except Exception as e:
-            logger.warning(f"Typesense unavailable for stats: {e}")
+            logger.debug(f"Typesense unavailable for stats: {e}")
             total_indexed = 0
             healthy = False
 
@@ -324,7 +324,7 @@ def get_crawler_stats(db: Session = Depends(get_db)):
         try:
             file_types = typesense_client.get_file_type_distribution()
         except Exception as e:
-            logger.warning(f"Failed to get file type distribution: {e}")
+            logger.debug(f"Failed to get file type distribution: {e}")
             file_types = {}
 
         # Runtime state from CrawlJobManager
@@ -399,6 +399,8 @@ def stream_crawler_status(db: Session = Depends(get_db)):
                         or "Not Ready" in error_str
                         or "Lagging" in error_str
                         or "Connection" in error_str
+                        or "404" in error_str
+                        or "not found" in error_str.lower()
                     ):
                         logger.debug(f"Typesense unavailable in SSE stream: {e}")
                     else:

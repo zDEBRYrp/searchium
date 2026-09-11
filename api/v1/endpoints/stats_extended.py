@@ -63,7 +63,14 @@ def get_recent_files(limit: int = Query(default=10, ge=1, le=50)):
 
     except Exception as e:
         error_str = str(e)
-        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str:
+        if (
+            "503" in error_str
+            or "Not Ready" in error_str
+            or "Lagging" in error_str
+            or "Connection" in error_str
+            or "404" in error_str
+            or "not found" in error_str.lower()
+        ):
             logger.debug(f"Search engine unavailable in get_recent_files: {e}")
             if _recent_files_cache["files"] and (time.time() - _recent_files_cache["ts"]) < 30:
                 return {"files": _recent_files_cache["files"], "total": _recent_files_cache["total"]}
@@ -196,7 +203,14 @@ def get_indexing_activity(time_range: Literal["24h", "7d"] = Query(default="24h"
 
     except Exception as e:
         error_str = str(e)
-        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str:
+        if (
+            "503" in error_str
+            or "Not Ready" in error_str
+            or "Lagging" in error_str
+            or "Connection" in error_str
+            or "404" in error_str
+            or "not found" in error_str.lower()
+        ):
             logger.debug(f"Search engine unavailable in get_indexing_activity: {e}")
             return {"range": time_range, "activity": [], "total": 0}
         logger.error(f"Error getting indexing activity: {e}")
@@ -262,7 +276,7 @@ def get_files_by_type(
 
     except Exception as e:
         error_str = str(e)
-        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str:
+        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str or "404" in error_str or "not found" in error_str.lower():
             logger.debug(f"Search engine unavailable in get_files_by_type: {e}")
             return {"files": [], "total": 0, "page": page, "per_page": per_page, "extension": ext}
         logger.error(f"Error getting files by type: {e}")
@@ -344,6 +358,10 @@ def get_files_by_age(
         }
 
     except Exception as e:
+        error_str = str(e)
+        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str or "404" in error_str or "not found" in error_str.lower():
+            logger.debug(f"Search engine unavailable in get_files_by_age: {e}")
+            return {"files": [], "total": 0, "page": page, "per_page": per_page, "age_range": age_range}
         logger.error(f"Error getting files by age: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -393,6 +411,10 @@ def get_file_age_distribution():
         return {"distribution": buckets}
 
     except Exception as e:
+        error_str = str(e)
+        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str or "404" in error_str or "not found" in error_str.lower():
+            logger.debug(f"Search engine unavailable in get_file_age_distribution: {e}")
+            return {"distribution": {}}
         logger.error(f"Error getting file age distribution: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -452,7 +474,7 @@ def get_storage_by_type():
 
     except Exception as e:
         error_str = str(e)
-        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str:
+        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str or "404" in error_str or "not found" in error_str.lower():
             logger.debug(f"Search engine unavailable in get_storage_by_type: {e}")
             return {"storage": {}}
         logger.error(f"Error getting storage by type: {e}")
@@ -499,7 +521,7 @@ def get_index_storage():
 
     except Exception as e:
         error_str = str(e)
-        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str:
+        if "503" in error_str or "Not Ready" in error_str or "Lagging" in error_str or "Connection" in error_str or "404" in error_str or "not found" in error_str.lower():
             logger.debug(f"Search engine unavailable in get_index_storage: {e}")
             return {
                 "num_documents": 0,
