@@ -1,4 +1,4 @@
-﻿"""
+"""
 Typesense client for search operations
 """
 

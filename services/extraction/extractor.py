@@ -1,4 +1,4 @@
-﻿"""
+"""
 Document content extraction using Apache Tika with comprehensive format support
 including archive handling.
 

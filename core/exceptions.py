@@ -1,4 +1,4 @@
-﻿"""
+"""
 Global exception handlers and custom exceptions
 """
 

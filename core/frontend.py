@@ -1,4 +1,4 @@
-﻿"""
+"""
 Frontend Routing Module
 
 Handles SPA routing, Vite dev server proxy, and static file serving.

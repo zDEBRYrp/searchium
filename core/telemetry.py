@@ -1,4 +1,4 @@
-﻿"""
+"""
 Telemetry manager for PostHog integration.
 Handles initialization, event capturing, and exception tracking.
 """

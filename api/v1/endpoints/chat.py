@@ -1,4 +1,4 @@
-﻿"""
+"""
 Chat & Similar Files API endpoints
 """
 

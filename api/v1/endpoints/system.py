@@ -1,4 +1,4 @@
-﻿"""
+"""
 System API endpoints for initialization status and service management
 """
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Model Downloader Service - Downloads embedding models from HuggingFace for Typesense
 """
 

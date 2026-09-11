@@ -1,4 +1,4 @@
-﻿"""
+"""
 Extended statistics endpoints for the dashboard.
 
 Provides time-based indexing data, recent files, and drill-down capabilities.

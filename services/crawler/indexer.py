@@ -1,4 +1,4 @@
-﻿"""
+"""
 File Indexer component (optimized with batch upserts)
 """
 

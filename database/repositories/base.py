@@ -1,4 +1,4 @@
-﻿"""
+"""
 Base repository class
 """
 

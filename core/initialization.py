@@ -1,4 +1,4 @@
-﻿"""
+"""
 Application Initialization Module
 
 Handles critical and background initialization for Searchium services.

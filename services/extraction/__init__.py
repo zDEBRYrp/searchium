@@ -1,4 +1,4 @@
-﻿"""
+"""
 Extraction Module
 
 Provides content extraction from various file types using pluggable strategies.

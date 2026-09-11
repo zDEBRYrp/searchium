@@ -1,4 +1,4 @@
-﻿"""
+"""
 Wizard State Repository - Database operations for wizard state
 """
 

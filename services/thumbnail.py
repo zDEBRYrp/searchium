@@ -1,4 +1,4 @@
-﻿"""
+"""
 System thumbnail service for retrieving OS-native file thumbnails.
 
 This service reads thumbnails from OS-specific caches rather than generating them:

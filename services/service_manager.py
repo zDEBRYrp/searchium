@@ -1,4 +1,4 @@
-﻿"""
+"""
 Service State Manager for tracking initialization and health of all services
 Enables instant FastAPI startup with parallel background initialization
 """

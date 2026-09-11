@@ -1,4 +1,4 @@
-﻿"""
+"""
 System initialization stream API
 """
 

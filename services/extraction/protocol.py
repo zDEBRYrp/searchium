@@ -1,4 +1,4 @@
-﻿"""
+"""
 Extraction Strategy Protocol
 
 Defines the interface for all extraction strategies.

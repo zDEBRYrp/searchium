@@ -1,4 +1,4 @@
-﻿"""
+"""
 File operations API for cross-platform file opening functionality
 """
 

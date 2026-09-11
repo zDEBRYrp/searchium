@@ -1,4 +1,4 @@
-﻿"""
+"""
 Docker Manager Service - Manages docker-compose lifecycle and container monitoring
 """
 

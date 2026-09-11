@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unified Search API endpoint
 """
 

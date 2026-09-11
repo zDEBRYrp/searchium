@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tika Extraction Strategy
 
 Extracts content from documents using Apache Tika.

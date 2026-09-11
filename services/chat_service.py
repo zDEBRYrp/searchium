@@ -1,4 +1,4 @@
-﻿"""
+"""
 Chat with Files - RAG pipeline using LLM + Typesense search
 
 Provides conversational AI over indexed documents.

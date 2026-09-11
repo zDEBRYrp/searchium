@@ -1,4 +1,4 @@
-﻿"""
+"""
 Watch paths management API endpoints
 """
 

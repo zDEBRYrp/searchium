@@ -1,4 +1,4 @@
-﻿"""
+"""
 File Monitor Service using Watchdog
 """
 

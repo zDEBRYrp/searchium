@@ -1,4 +1,4 @@
-﻿"""
+"""
 Index Verification Service
 """
 

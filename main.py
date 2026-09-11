@@ -1,4 +1,4 @@
-﻿"""
+"""
 Searchium - Advanced file search engine powered by AI
 
 Main application entry point. Initialization logic extracted to core/initialization.py

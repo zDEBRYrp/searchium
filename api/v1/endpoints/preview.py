@@ -1,4 +1,4 @@
-﻿"""
+"""
 API endpoints for file preview/thumbnail retrieval.
 """
 

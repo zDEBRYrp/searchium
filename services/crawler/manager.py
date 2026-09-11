@@ -1,4 +1,4 @@
-﻿"""
+"""
 Crawl Job Manager - coordinates discovery and indexing
 """
 

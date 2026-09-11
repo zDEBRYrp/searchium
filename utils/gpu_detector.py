@@ -1,4 +1,4 @@
-﻿"""
+"""
 GPU Detection Utility
 
 Detects NVIDIA GPU availability and Docker runtime support for Typesense GPU mode.

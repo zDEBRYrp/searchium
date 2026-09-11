@@ -1,4 +1,4 @@
-﻿"""
+"""
 Wizard State Model - Tracks initialization wizard completion status
 """
 

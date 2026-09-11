@@ -1,4 +1,4 @@
-﻿"""
+"""
 Utility to read app info from pyproject.toml
 """
 

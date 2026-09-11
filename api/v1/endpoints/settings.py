@@ -1,4 +1,4 @@
-﻿"""
+"""
 Settings management API endpoints
 """
 

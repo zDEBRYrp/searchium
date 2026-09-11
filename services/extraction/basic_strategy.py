@@ -1,4 +1,4 @@
-﻿"""
+"""
 Basic Extraction Strategy
 
 Fallback strategy for basic text extraction from any file.

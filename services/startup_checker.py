@@ -1,4 +1,4 @@
-﻿"""
+"""
 Startup Check Service - Validates system requirements on app startup
 """
 

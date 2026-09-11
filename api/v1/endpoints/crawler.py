@@ -1,4 +1,4 @@
-﻿"""
+"""
 Crawl control API endpoints (Database-backed)
 """
 
