@@ -97,7 +97,7 @@ def register_all_health_checkers():
 def critical_init():
     """
     Critical initialization that MUST complete before FastAPI startup.
-    Initializes database and starts Docker containers if wizard is completed.
+    Initializes database and services.
     """
     service_manager = get_service_manager()
 
@@ -113,8 +113,6 @@ def critical_init():
         service_manager.set_ready("database", details={"type": "sqlite", "tables": "created"})
         logger.info("вњ… Database initialized")
 
-        # Note: Docker containers are now started via API after UI loads (deferred startup)
-        # This improves app startup time by showing the UI immediately
         from searchium.database.repositories import WizardStateRepository
 
         with db_session() as db:
@@ -122,9 +120,9 @@ def critical_init():
             wizard_state = wizard_repo.get()
 
         if wizard_state and wizard_state.wizard_completed:
-            logger.info("рџђі Wizard completed - containers will start after UI loads")
+            logger.info("Wizard completed")
         else:
-            logger.info("рџ§Є Wizard not completed - Docker containers will start via wizard")
+            logger.info("Wizard not completed")
 
     except Exception as e:
         service_manager.set_failed("database", f"Database initialization failed: {e}")

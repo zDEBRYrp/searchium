@@ -30,26 +30,6 @@ class WizardStateRepository:
         """Get wizard state"""
         return self.db.query(WizardState).first()
 
-    def update_docker_check(self, passed: bool) -> WizardState:
-        """Update docker check status"""
-        state = self.get_or_create()
-        state.docker_check_passed = passed
-        if passed and state.last_step_completed < 0:
-            state.last_step_completed = 0
-        self.db.commit()
-        self.db.refresh(state)
-        return state
-
-    def update_docker_services(self, started: bool) -> WizardState:
-        """Update docker services status"""
-        state = self.get_or_create()
-        state.docker_services_started = started
-        if started and state.last_step_completed < 1:
-            state.last_step_completed = 1
-        self.db.commit()
-        self.db.refresh(state)
-        return state
-
     def update_collection_created(self, created: bool) -> WizardState:
         """Update collection creation status"""
         state = self.get_or_create()
@@ -83,8 +63,6 @@ class WizardStateRepository:
         """Reset wizard state"""
         state = self.get_or_create()
         state.wizard_completed = False
-        state.docker_check_passed = False
-        state.docker_services_started = False
         state.collection_created = False
         state.last_step_completed = 0
         state.completed_at = None

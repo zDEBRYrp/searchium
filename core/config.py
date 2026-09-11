@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1000, description="Characters per chunk for indexing")
     chunk_overlap: int = Field(default=200, description="Overlapping characters between chunks")
 
-    # Tika Server (Docker-based)
+    # Tika Server
     tika_host: str = Field(default="localhost")
     tika_port: int = Field(default=9998)
     tika_protocol: str = Field(default="http")

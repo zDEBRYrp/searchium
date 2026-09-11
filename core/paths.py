@@ -82,7 +82,7 @@ class AppPaths:
             raise
 
     def get_env_vars(self) -> Dict[str, str]:
-        """Get environment variables for Docker containers"""
+        """Get environment variables for Typesense configuration"""
         return {
             "TYPESENSE_DATA_DIR": str(self.typesense_data_dir),
             "TYPESENSE_MODELS_DIR": str(self.models_dir),

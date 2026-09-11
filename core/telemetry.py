@@ -261,21 +261,18 @@ class TelemetryManager:
         """
         try:
             from searchium.utils.gpu_detector import (
-                is_nvidia_docker_runtime_available,
                 is_nvidia_gpu_available,
                 should_use_gpu_mode,
             )
 
             return {
                 "has_gpu_hardware": is_nvidia_gpu_available(),
-                "has_nvidia_runtime": is_nvidia_docker_runtime_available(),
                 "gpu_mode_enabled": should_use_gpu_mode(),
             }
         except Exception as e:
             logger.debug(f"Failed to detect GPU info: {e}")
             return {
                 "has_gpu_hardware": False,
-                "has_nvidia_runtime": False,
                 "gpu_mode_enabled": False,
             }
 

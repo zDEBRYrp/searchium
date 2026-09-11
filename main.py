@@ -94,18 +94,6 @@ def perform_shutdown(vite_process=None):
             logger.warning(f"вљ пёЏ Failed to create snapshot on shutdown: {e}")
             telemetry.capture_exception(e)
 
-        # Stop docker containers if configured
-        from searchium.services.docker_manager import get_docker_manager
-
-        docker_manager = get_docker_manager()
-        if docker_manager.is_docker_available():
-            logger.info("рџ›‘ Stopping docker containers...")
-            result = docker_manager.stop_services()
-            if result.get("success"):
-                logger.info("вњ… Docker containers stopped")
-            else:
-                logger.warning(f"вљ пёЏ Failed to stop docker containers: {result.get('error')}")
-
         if vite_process:
             logger.info("рџ›‘ Stopping Vite dev server...")
             vite_process.terminate()

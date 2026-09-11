@@ -12,7 +12,6 @@ from searchium.api.v1.sse import sse_response
 from searchium.core.logging import logger
 from searchium.database.models import db_session
 from searchium.database.repositories.wizard_state_repository import WizardStateRepository
-from searchium.services.docker_manager import get_docker_manager
 from searchium.services.startup_checker import CheckDetail, get_startup_checker
 from searchium.services.typesense_client import get_typesense_client
 
@@ -23,41 +22,9 @@ class WizardStatusResponse(BaseModel):
     """Response model for wizard status"""
 
     wizard_completed: bool
-    docker_check_passed: bool
-    docker_services_started: bool
     collection_created: bool
     last_step_completed: int
     current_step: int
-
-
-class DockerCheckResponse(BaseModel):
-    """Response model for docker check"""
-
-    available: bool
-    command: Optional[str] = None
-    version: Optional[str] = None
-    has_gpu_hardware: bool = False
-    has_nvidia_runtime: bool = False
-    gpu_mode_enabled: bool = False
-    error: Optional[str] = None
-
-
-class DockerStartResponse(BaseModel):
-    """Response model for docker start"""
-
-    success: bool
-    message: Optional[str] = None
-    error: Optional[str] = None
-
-
-class DockerStatusResponse(BaseModel):
-    """Response model for docker status"""
-
-    success: bool
-    running: bool
-    healthy: bool
-    services: list
-    error: Optional[str] = None
 
 
 class CollectionCreateResponse(BaseModel):
@@ -89,10 +56,10 @@ class StartupCheckResponse(BaseModel):
 
     all_checks_passed: bool
     needs_wizard: bool
-    is_first_run: bool  # True if wizard was never completed
+    is_first_run: bool
     start_step: Optional[int] = None
     is_upgrade: bool
-    checks: dict  # Maps check name to CheckDetailResponse
+    checks: dict
 
 
 class DatabaseUpgradeResponse(BaseModel):
@@ -103,6 +70,15 @@ class DatabaseUpgradeResponse(BaseModel):
     logs: list[str]
 
 
+class ModelStatusResponse(BaseModel):
+    """Response model for model status"""
+
+    exists: bool
+    path: str
+    files: list
+    missing_files: list
+
+
 @router.get("/status", response_model=WizardStatusResponse)
 def get_wizard_status():
     """Get current wizard completion status"""
@@ -110,9 +86,6 @@ def get_wizard_status():
         with db_session() as db:
             repo = WizardStateRepository(db)
             state = repo.get_or_create()
-
-            docker_check = True
-            docker_started = True
 
             if state.wizard_completed:
                 current_step = 3
@@ -123,8 +96,6 @@ def get_wizard_status():
 
             return WizardStatusResponse(
                 wizard_completed=state.wizard_completed,
-                docker_check_passed=docker_check,
-                docker_services_started=docker_started,
                 collection_created=state.collection_created,
                 last_step_completed=state.last_step_completed,
                 current_step=current_step,
@@ -136,27 +107,22 @@ def get_wizard_status():
 
 @router.get("/startup-check", response_model=StartupCheckResponse)
 def check_startup_requirements():
-    """
-    Perform comprehensive startup checks to determine if wizard is needed.
-    """
+    """Perform comprehensive startup checks to determine if wizard is needed."""
     try:
         from searchium.core.telemetry import telemetry
 
         checker = get_startup_checker()
         result = checker.perform_all_checks()
 
-        # If wizard hasn't been completed yet, auto-complete it (skip Docker wizard steps)
         if not result.wizard_reset.passed:
             try:
                 with db_session() as db:
                     repo = WizardStateRepository(db)
                     state = repo.get_or_create()
-                    repo.update_docker_check(True)
-                    repo.update_docker_services(True)
                     if state.collection_created is None:
                         repo.update_collection_created(True)
                     repo.mark_completed()
-                logger.info("Wizard auto-completed on first run (Docker not required)")
+                logger.info("Wizard auto-completed on first run")
                 result.wizard_reset = CheckDetail(passed=True, message="Wizard auto-completed")
             except Exception as e:
                 logger.warning(f"Failed to auto-complete wizard: {e}")
@@ -202,91 +168,6 @@ def check_startup_requirements():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/docker-check", response_model=DockerCheckResponse)
-def check_docker():
-    """Check if Docker is installed"""
-    try:
-        with db_session() as db:
-            repo = WizardStateRepository(db)
-            repo.update_docker_check(True)
-
-        return DockerCheckResponse(
-            available=True,
-            command="docker",
-            version="not required",
-            has_gpu_hardware=False,
-            has_nvidia_runtime=False,
-            gpu_mode_enabled=False,
-            error=None,
-        )
-    except Exception as e:
-        logger.error(f"Error checking docker: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/docker-images-check")
-def check_docker_images():
-    """Check if required docker images are present locally"""
-    return {"success": True, "all_present": True, "missing": [], "present": []}
-
-
-@router.get("/docker-pull")
-def pull_docker_images():
-    """Pull docker images with real progress updates via SSE"""
-    import json
-
-    def event_generator():
-        yield "data: " + json.dumps({"status": "complete", "success": True, "message": "Docker not required"}) + "\n\n"
-
-    from starlette.responses import StreamingResponse
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-@router.post("/docker-start", response_model=DockerStartResponse)
-def start_docker_services():
-    """Start docker-compose services"""
-    with db_session() as db:
-        repo = WizardStateRepository(db)
-        repo.update_docker_services(True)
-        repo.update_last_step(1)
-    return DockerStartResponse(success=True, message="Docker not required", error=None)
-
-
-@router.get("/docker-status", response_model=DockerStatusResponse)
-def get_docker_status():
-    """Get status of docker-compose services"""
-    with db_session() as db:
-        repo = WizardStateRepository(db)
-        repo.update_docker_services(True)
-    return DockerStatusResponse(
-        success=True,
-        running=True,
-        healthy=True,
-        services=[],
-        error=None,
-    )
-
-
-@router.get("/docker-logs")
-def stream_docker_logs():
-    """Stream docker-compose logs via Server-Sent Events"""
-    import json
-
-    def event_generator():
-        yield f"data: {json.dumps({'log': 'Docker not required', 'timestamp': 0})}\n\n"
-
-    return sse_response(event_generator())
-
-
-class ModelStatusResponse(BaseModel):
-    """Response model for model status"""
-
-    exists: bool
-    path: str
-    files: list
-    missing_files: list
-
-
 @router.get("/model-status", response_model=ModelStatusResponse)
 def get_model_status():
     """Check if embedding model is already downloaded"""
@@ -317,9 +198,6 @@ def download_model():
     downloader = get_model_downloader()
 
     def event_generator():
-        """Generate SSE events from model download progress"""
-
-        # First check if model already exists
         status = downloader.check_model_exists()
         if status["exists"]:
             yield (
@@ -336,19 +214,16 @@ def download_model():
             )
             return
 
-        # Use a queue to collect progress events
         import queue
         import threading
 
         progress_queue = queue.Queue()
         download_complete = threading.Event()
-        download_error = [None]  # Use list to allow modification in nested function
+        download_error = [None]
 
         def progress_callback(data: dict):
-            """Callback for each progress event"""
             progress_queue.put(data)
 
-        # Start download in background thread
         def do_download():
             try:
                 from searchium.core.telemetry import telemetry
@@ -362,7 +237,6 @@ def download_model():
                 if not result.get("success"):
                     download_error[0] = result.get("error")
                 else:
-                    # Track successful model download
                     telemetry.capture_event(
                         "wizard_step_model_download_completed",
                         {
@@ -372,7 +246,7 @@ def download_model():
                     )
 
                 download_complete.set()
-                progress_queue.put(None)  # Signal completion
+                progress_queue.put(None)
             except Exception as e:
                 logger.error(f"Model download error: {e}", exc_info=True)
                 download_error[0] = str(e)
@@ -382,12 +256,11 @@ def download_model():
         thread = threading.Thread(target=do_download, daemon=True)
         thread.start()
 
-        # Stream progress events
         logger.info("Starting model download SSE stream...")
         while True:
             try:
                 data = progress_queue.get(timeout=120.0)
-                if data is None:  # Completion signal
+                if data is None:
                     if download_error[0]:
                         yield "data: " + json.dumps({"error": download_error[0]}) + "\n\n"
                     break
@@ -408,30 +281,22 @@ def create_collection():
     import threading
 
     def _create_collection_task():
-        """Background task to create collection"""
         from searchium.core.telemetry import telemetry
         from searchium.services.service_manager import get_service_manager
 
-        # Reset service state and clear logs for fresh start
         service_manager = get_service_manager()
         service_manager.reset_service_for_retry("typesense")
 
         try:
             typesense = get_typesense_client()
-
-            # Initialize collection
             typesense.initialize_collection()
 
-            # Check if collection is ready
             if typesense.collection_ready:
-                # Update wizard state
                 with db_session() as db:
                     repo = WizardStateRepository(db)
                     repo.update_collection_created(True)
                     repo.update_last_step(2)
                 logger.info("Collection creation completed successfully")
-
-                # Track successful collection creation
                 telemetry.capture_event(
                     "wizard_step_collection_created",
                     {"success": True},
@@ -443,11 +308,9 @@ def create_collection():
             logger.error(f"Error creating collection: {e}", exc_info=True)
             telemetry.capture_exception(e)
 
-    # Start the background thread
     thread = threading.Thread(target=_create_collection_task, daemon=True)
     thread.start()
 
-    # Return immediately
     return CollectionCreateResponse(
         success=True,
         message="Collection creation started in background",
@@ -459,12 +322,8 @@ def get_collection_status():
     """Get status of Typesense collection"""
     try:
         typesense = get_typesense_client()
-
-        # Check if collection exists
-        # We explicitly check against Typesense instead of relying on the local flag
         ready = typesense.check_collection_exists()
 
-        # Get document count if available
         doc_count = None
         if ready:
             try:
@@ -485,6 +344,26 @@ def get_collection_status():
             ready=False,
             error=str(e),
         )
+
+
+@router.get("/collection-logs")
+def stream_collection_logs():
+    """Stream Typesense collection logs via SSE"""
+    import json
+
+    def event_generator():
+        try:
+            from searchium.services.service_manager import get_service_manager
+            service_manager = get_service_manager()
+            logs = service_manager.get_service_logs("typesense")
+            for log in logs:
+                yield f"data: {json.dumps({'log': log.get('message', ''), 'timestamp': log.get('timestamp', time.time())})}\n\n"
+            yield f"data: {json.dumps({'complete': True})}\n\n"
+        except Exception as e:
+            logger.error(f"Error streaming collection logs: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return sse_response(event_generator())
 
 
 @router.post("/database-upgrade", response_model=DatabaseUpgradeResponse)
@@ -510,29 +389,16 @@ def upgrade_database():
 
 @router.post("/restart-typesense")
 def restart_typesense():
-    """Restart Typesense - no-op, Docker not required"""
-    return {"success": True, "message": "Docker not required"}
+    """Restart Typesense"""
+    try:
+        from searchium.services.service_manager import get_service_manager
+        service_manager = get_service_manager()
+        service_manager.reset_service_for_retry("typesense")
+        return {"success": True, "message": "Typesense reset"}
+    except Exception as e:
+        logger.error(f"Error restarting typesense: {e}")
+        return {"success": False, "error": str(e)}
 
-@router.get("/collection-logs")
-def stream_collection_logs():
-    """Stream Typesense collection logs via SSE"""
-
-    import json
-
-    def event_generator():
-        """Generate SSE events from Typesense service manager logs"""
-        try:
-            from searchium.services.service_manager import get_service_manager
-            service_manager = get_service_manager()
-            logs = service_manager.get_service_logs("typesense")
-            for log in logs:
-                yield f"data: {json.dumps({'log': log.get('message', ''), 'timestamp': log.get('timestamp', time.time())})}\n\n"
-            yield f"data: {json.dumps({'complete': True})}\n\n"
-        except Exception as e:
-            logger.error(f"Error streaming collection logs: {e}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return sse_response(event_generator())
 
 @router.post("/complete")
 def complete_wizard():
@@ -545,20 +411,15 @@ def complete_wizard():
             state = repo.get_or_create()
             repo.mark_completed()
 
-            # Track wizard completion
             telemetry.capture_event(
                 "wizard_completed",
                 {
                     "total_steps": state.last_step_completed + 1,
-                    "docker_check_passed": state.docker_check_passed,
-                    "docker_services_started": state.docker_services_started,
                     "collection_created": state.collection_created,
                 },
             )
 
-            # Set user properties for segmentation
             from datetime import datetime
-
             from searchium.core.config import settings
 
             telemetry.set_user_properties(
@@ -596,17 +457,12 @@ def reset_wizard():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================================
-# App Container Startup Endpoints (Post-Wizard)
-# ============================================================================
-
-
 @router.post("/app-containers-start")
 def start_app_containers():
-    """Start Docker containers for the main app (after wizard is completed)."""
+    """App containers - no external services needed"""
     return {
         "success": True,
-        "message": "Docker not required",
+        "message": "No containers required",
         "timestamp": int(time.time() * 1000),
     }
 
