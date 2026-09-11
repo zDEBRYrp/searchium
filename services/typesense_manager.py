@@ -17,7 +17,6 @@ TYPESENSE_VERSION = "29.0"
 TYPESENSE_API_KEY = "xyz-typesense-key"
 
 DOWNLOAD_URLS = {
-    "Windows": f"https://github.com/typesense/typesense/releases/download/v{TYPESENSE_VERSION}/typesense-server-win64-v{TYPESENSE_VERSION}.zip",
     "Linux": f"https://github.com/typesense/typesense/releases/download/v{TYPESENSE_VERSION}/typesense-server-linux-amd64-v{TYPESENSE_VERSION}.tar.gz",
     "Darwin": f"https://github.com/typesense/typesense/releases/download/v{TYPESENSE_VERSION}/typesense-server-linux-amd64-v{TYPESENSE_VERSION}.tar.gz",
 }
@@ -42,6 +41,10 @@ class TypesenseManager:
             return self.bin_dir / "typesense-server.exe"
         return self.bin_dir / "typesense-server"
 
+    def is_platform_supported(self) -> bool:
+        """Check if Typesense has a native binary for this platform"""
+        return platform.system() in DOWNLOAD_URLS
+
     def is_installed(self) -> bool:
         return self._get_binary_path().exists()
 
@@ -55,7 +58,7 @@ class TypesenseManager:
         system = platform.system()
         url = DOWNLOAD_URLS.get(system)
         if not url:
-            logger.error(f"No Typesense binary for {system}")
+            logger.warning(f"No native Typesense binary for {system} - search will be unavailable")
             return False
 
         self.bin_dir.mkdir(parents=True, exist_ok=True)
@@ -121,9 +124,13 @@ class TypesenseManager:
             logger.info("Typesense already running")
             return True
 
+        if not self.is_platform_supported():
+            logger.warning(f"Typesense has no native binary for {platform.system()} - search unavailable")
+            return False
+
         binary = self._get_binary_path()
         if not binary.exists():
-            logger.error("Typesense not installed, downloading...")
+            logger.info("Typesense not found, downloading...")
             if not self.download():
                 return False
 

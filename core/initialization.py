@@ -140,11 +140,25 @@ def init_typesense_for_wizard():
     Returns success status and error message if any.
     """
     from searchium.services.service_manager import get_service_manager
+    from searchium.services.typesense_manager import get_typesense_manager
 
     service_manager = get_service_manager()
+    ts_manager = get_typesense_manager()
 
     try:
         logger.info("Initializing Typesense...")
+
+        if not ts_manager.is_platform_supported():
+            service_manager.set_ready(
+                "typesense",
+                details={
+                    "mode": "degraded",
+                    "message": f"No native Typesense binary for {__import__('platform').system()} - search unavailable",
+                },
+            )
+            logger.warning("Typesense not available on this platform - running in degraded mode")
+            return {"success": True, "degraded": True}
+
         typesense = get_typesense_client()
 
         typesense.initialize_collection()
@@ -159,14 +173,26 @@ def init_typesense_for_wizard():
             logger.info("вњ… Typesense initialized")
             return {"success": True}
         else:
-            service_manager.set_failed("typesense", "Collection initialization failed")
-            return {"success": False, "error": "Collection initialization failed"}
+            service_manager.set_ready(
+                "typesense",
+                details={
+                    "mode": "degraded",
+                    "message": "Collection initialization failed - search unavailable",
+                },
+            )
+            logger.warning("Typesense collection init failed - running in degraded mode")
+            return {"success": True, "degraded": True}
 
     except Exception as e:
-        error_msg = f"Typesense initialization error: {e}"
-        service_manager.set_failed("typesense", error_msg)
-        logger.error(error_msg)
-        return {"success": False, "error": error_msg}
+        service_manager.set_ready(
+            "typesense",
+            details={
+                "mode": "degraded",
+                "message": f"Typesense unavailable: {e}",
+            },
+        )
+        logger.warning(f"Typesense unavailable: {e} - running in degraded mode")
+        return {"success": True, "degraded": True}
 
 
 def init_tika_for_wizard():
