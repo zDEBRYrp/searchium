@@ -390,17 +390,6 @@ class FlaskUI:
         except KeyboardInterrupt:
             pass
 
-        # Kill browser process when exiting
-        try:
-            if FLASKWEBGUI_BROWSER_PROCESS and FLASKWEBGUI_BROWSER_PROCESS.poll() is None:
-                FLASKWEBGUI_BROWSER_PROCESS.terminate()
-                try:
-                    FLASKWEBGUI_BROWSER_PROCESS.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    FLASKWEBGUI_BROWSER_PROCESS.kill()
-        except Exception:
-            pass
-
         if not self.auto_close:
             return
 
