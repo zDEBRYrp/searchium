@@ -476,3 +476,39 @@ def stream_app_containers_status():
         yield f"data: {json.dumps({'success': True, 'running': True, 'healthy': True, 'services': [], 'error': None, 'timestamp': time.time()})}\n\n"
 
     return sse_response(event_generator())
+
+
+@router.get("/docker-check")
+def check_docker():
+    return {"available": True, "command": None, "version": None, "has_gpu_hardware": False, "has_nvidia_runtime": False, "gpu_mode_enabled": False, "error": None}
+
+
+@router.get("/docker-images-check")
+def check_docker_images():
+    return {"success": True, "all_present": True, "missing": [], "present": []}
+
+
+@router.get("/docker-pull")
+def pull_docker_images():
+    import json
+    def event_generator():
+        yield "data: " + json.dumps({"status": "complete", "success": True, "complete": True}) + "\n\n"
+    return sse_response(event_generator())
+
+
+@router.post("/docker-start")
+def start_docker_services():
+    return {"success": True, "message": "Not required", "error": None}
+
+
+@router.get("/docker-status")
+def get_docker_status():
+    return {"success": True, "running": True, "healthy": True, "services": [], "error": None}
+
+
+@router.get("/docker-logs")
+def stream_docker_logs():
+    import json
+    def event_generator():
+        yield f"data: {json.dumps({'complete': True})}\n\n"
+    return sse_response(event_generator())
