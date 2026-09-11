@@ -39,17 +39,28 @@ def startup_handler():
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info("=" * 50)
 
-    # Capture startup event
     telemetry.capture_event("application_start")
 
     try:
-        critical_init()
-        logger.info("рџљЂ Database ready - API starting immediately!")
+        # Start Typesense
+        from searchium.services.typesense_manager import get_typesense_manager
+        ts = get_typesense_manager()
+        if not ts.is_running():
+            if not ts.is_installed():
+                logger.info("Typesense not found, downloading...")
+            if ts.start():
+                if ts.wait_until_ready(timeout=30):
+                    logger.info("Typesense ready")
+                else:
+                    logger.warning("Typesense started but not responding yet")
+            else:
+                logger.error("Failed to start Typesense - search will be unavailable")
 
-        # Start Vite Dev Server in Debug Mode
+        critical_init()
+        logger.info("Database ready - API starting immediately!")
+
         if settings.debug:
-            logger.info("рџљ§ Debug mode enabled: Starting Vite dev server...")
-            # frontend is at apps/searchium/frontend, main.py is at apps/searchium/searchium/main.py
+            logger.info("Debug mode enabled: Starting Vite dev server...")
             frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
             _vite_process = subprocess.Popen(
                 ["npm", "run", "dev", "--", "--port", str(settings.frontend_dev_port), "--strictPort"],
@@ -57,14 +68,12 @@ def startup_handler():
                 stdout=sys.stdout,
                 stderr=sys.stderr,
             )
-            logger.info(f"вњ… Vite dev server started (PID: {_vite_process.pid})")
+            logger.info(f"Vite dev server started (PID: {_vite_process.pid})")
 
-        # Start health monitoring loop in background thread
         monitor_thread = threading.Thread(target=health_monitoring_loop, daemon=True, name="health_monitor")
         monitor_thread.start()
-        logger.info("в„№пёЏ  Complete the initialization wizard to set up remaining services")
     except Exception as e:
-        logger.error(f"вќЊ Critical initialization failed: {e}")
+        logger.error(f"Critical initialization failed: {e}")
         telemetry.capture_exception(e)
         raise
 
@@ -93,6 +102,13 @@ def perform_shutdown(vite_process=None):
         except Exception as e:
             logger.warning(f"вљ пёЏ Failed to create snapshot on shutdown: {e}")
             telemetry.capture_exception(e)
+
+        # Stop Typesense
+        try:
+            from searchium.services.typesense_manager import get_typesense_manager
+            get_typesense_manager().stop()
+        except Exception:
+            pass
 
         if vite_process:
             logger.info("рџ›‘ Stopping Vite dev server...")
