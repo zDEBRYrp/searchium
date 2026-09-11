@@ -13,6 +13,23 @@ from searchium.core.logging import logger
 from searchium.core.typesense_schema import get_collection_schema
 
 
+def _is_degraded() -> bool:
+    """True when no native Typesense server can run on this platform.
+
+    All network calls must short-circuit in degraded mode: without this,
+    every call burns ~8s in urllib3 retries against a dead localhost:8108,
+    hanging /crawler/status, /crawler/stream and every search.
+    """
+    try:
+        from searchium.services.typesense_manager import get_typesense_manager
+
+        return not get_typesense_manager().is_platform_supported()
+    except Exception:
+        import platform as _platform
+
+        return _platform.system() not in ("Linux", "Darwin")
+
+
 class TypesenseClient:
     """Typesense client wrapper"""
 
@@ -50,6 +67,8 @@ class TypesenseClient:
         Raises:
             Exception: For transient errors (503, connection errors) that should be retried
         """
+        if _is_degraded():
+            return False
         try:
             self.client.collections[self.collection_name].retrieve()
             self.collection_ready = True
@@ -85,6 +104,11 @@ class TypesenseClient:
 
         service_manager = get_service_manager()
         service_name = "typesense"
+
+        if _is_degraded():
+            self.collection_ready = False
+            service_manager.append_service_log(service_name, "Skipped: no native server on this platform")
+            return
 
         attempt = 0
         backoff = initial_backoff_seconds
@@ -231,6 +255,8 @@ class TypesenseClient:
 
     def is_file_indexed(self, file_path: str) -> bool:
         """Check if file is already indexed"""
+        if _is_degraded():
+            return False
         try:
             doc_id = self.generate_doc_id(file_path)
             self.client.collections[self.collection_name].documents[doc_id].retrieve()
@@ -251,6 +277,8 @@ class TypesenseClient:
         Returns:
             Document dict if found, otherwise None.
         """
+        if _is_degraded():
+            return None
         try:
             # Get chunk 0 which has all the metadata
             doc_id = self.generate_doc_id(file_path, chunk_index=0)
@@ -296,6 +324,8 @@ class TypesenseClient:
             file_hash: File content hash
             metadata: Additional metadata from extraction (Tika fields)
         """
+        if _is_degraded():
+            raise RuntimeError("Typesense unavailable on this platform (degraded mode)")
         doc_id = self.generate_doc_id(file_path, chunk_index)
 
         # All chunks get complete metadata
@@ -370,6 +400,9 @@ class TypesenseClient:
         if not documents:
             return {"success": True, "indexed": 0}
 
+        if _is_degraded():
+            return {"success": False, "indexed": 0, "errors": len(documents)}
+
         try:
             result = self.client.collections[self.collection_name].documents.import_(
                 documents, action="upsert"
@@ -401,6 +434,8 @@ class TypesenseClient:
 
         Uses filter-based deletion to remove all documents with matching file_path.
         """
+        if _is_degraded():
+            return
         try:
             # Delete all chunks for this file path
             self.client.collections[self.collection_name].documents.delete({"filter_by": f"file_path:={file_path}"})
@@ -419,6 +454,8 @@ class TypesenseClient:
         semantic: bool = False,
     ) -> Dict[str, Any]:
         """Search indexed files with fuzzy + optional semantic search"""
+        if _is_degraded():
+            return {"hits": [], "found": 0, "page": page}
         try:
             if semantic:
                 search_parameters = {
@@ -457,6 +494,8 @@ class TypesenseClient:
         limit: int = 10,
     ) -> Dict[str, Any]:
         """Find files similar to a given file using vector embeddings"""
+        if _is_degraded():
+            return {"results": [], "found": 0}
         try:
             existing_doc = self.get_doc_by_path(file_path)
             if not existing_doc:
@@ -500,6 +539,8 @@ class TypesenseClient:
 
         Returns file count (not chunk count) by grouping by file_path.
         """
+        if _is_degraded():
+            return {"num_documents": 0, "schema": None}
         try:
             # Use group_by to count unique files
             results = self.client.collections[self.collection_name].documents.search(
@@ -544,6 +585,8 @@ class TypesenseClient:
         Returns:
             Dict mapping file_extension to count, e.g. {".pdf": 42, ".txt": 15}
         """
+        if _is_degraded():
+            return {}
         try:
             # Use group_by to get unique files, then facet by extension
             results = self.client.collections[self.collection_name].documents.search(
@@ -584,6 +627,8 @@ class TypesenseClient:
         This ensures schema changes are applied properly.
         Use this instead of just clearing documents when schema has changed.
         """
+        if _is_degraded():
+            raise RuntimeError("Typesense unavailable on this platform (degraded mode)")
         try:
             # Drop the existing collection
             try:
@@ -624,6 +669,8 @@ class TypesenseClient:
         Returns unique files by grouping by file_path.
         Used to detect orphaned index entries by comparing with filesystem.
         """
+        if _is_degraded():
+            return []
         try:
             results = self.client.collections[self.collection_name].documents.search(
                 {
@@ -648,6 +695,8 @@ class TypesenseClient:
 
         Uses group_by to count unique files.
         """
+        if _is_degraded():
+            return 0
         try:
             results = self.client.collections[self.collection_name].documents.search(
                 {
@@ -668,6 +717,8 @@ class TypesenseClient:
 
         Returns dict with 'successful' and 'failed' counts.
         """
+        if _is_degraded():
+            return {"successful": 0, "failed": len(file_paths)}
         successful = 0
         failed = 0
 
@@ -693,6 +744,8 @@ class TypesenseClient:
         Generate and return a search-only API key for the frontend.
         The key is cached to avoid creating a new one on every request.
         """
+        if _is_degraded():
+            return settings.typesense_api_key
         if getattr(self, "_search_only_key", None):
             return str(self._search_only_key)
 

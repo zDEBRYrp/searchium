@@ -39,6 +39,10 @@ def register_all_health_checkers():
     # Typesense health check
     def typesense_health_check():
         try:
+            from searchium.services.typesense_manager import get_typesense_manager
+
+            if not get_typesense_manager().is_platform_supported():
+                return {"healthy": True, "degraded": True, "message": "No native server on this platform"}
             typesense = get_typesense_client()
             typesense.get_collection_stats()
             return {"healthy": True, "collection": typesense.collection_name}
