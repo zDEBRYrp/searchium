@@ -247,6 +247,20 @@ def init_crawl_manager_for_wizard():
             watch_paths = watch_path_repo.get_enabled()
             previous_state = crawler_state_repo.get_state()
 
+            # Auto-seed home directory if no watch paths configured at all.
+            # Without this, /monitor/start returns False ("Failed to toggle the indexer").
+            if not watch_paths:
+                try:
+                    from pathlib import Path as _Path
+
+                    home = str(_Path.home())
+                    if _Path(home).is_dir():
+                        watch_path_repo.create_if_not_exists(home)
+                        logger.info(f"Auto-seeded default watch path: {home}")
+                        watch_paths = watch_path_repo.get_enabled()
+                except Exception as seed_e:
+                    logger.warning(f"Could not auto-seed watch path: {seed_e}")
+
         crawl_manager = get_crawl_job_manager(watch_paths=watch_paths)
 
         def crawl_manager_health_check():
@@ -274,7 +288,7 @@ def init_crawl_manager_for_wizard():
             if success:
                 logger.info("вњ… Auto-resumed crawl based on previous state.")
             else:
-                logger.warning("вљ пёЏ Failed to auto-resume crawl from previous state.")
+                logger.warning("⚠️ Failed to auto-resume crawl from previous state.")
 
         return {"success": True}
 
