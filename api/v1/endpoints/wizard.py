@@ -13,7 +13,7 @@ from searchium.core.logging import logger
 from searchium.database.models import db_session
 from searchium.database.repositories.wizard_state_repository import WizardStateRepository
 from searchium.services.docker_manager import get_docker_manager
-from searchium.services.startup_checker import get_startup_checker
+from searchium.services.startup_checker import CheckDetail, get_startup_checker
 from searchium.services.typesense_client import get_typesense_client
 
 router = APIRouter(prefix="/wizard", tags=["wizard"])
@@ -138,13 +138,6 @@ def get_wizard_status():
 def check_startup_requirements():
     """
     Perform comprehensive startup checks to determine if wizard is needed.
-
-    This endpoint validates all system requirements and returns detailed status
-    for each check. Unlike the /status endpoint which reads from DB, this performs
-    actual validation of external conditions (Docker, images, services, model, collection).
-
-    Returns:
-        Detailed status of each check, plus which wizard step to start from if any checks fail
     """
     try:
         from searchium.core.telemetry import telemetry
@@ -152,7 +145,22 @@ def check_startup_requirements():
         checker = get_startup_checker()
         result = checker.perform_all_checks()
 
-        # Track wizard start if needed
+        # If wizard hasn't been completed yet, auto-complete it (skip Docker wizard steps)
+        if not result.wizard_reset.passed:
+            try:
+                with db_session() as db:
+                    repo = WizardStateRepository(db)
+                    state = repo.get_or_create()
+                    repo.update_docker_check(True)
+                    repo.update_docker_services(True)
+                    if state.collection_created is None:
+                        repo.update_collection_created(True)
+                    repo.mark_completed()
+                logger.info("Wizard auto-completed on first run (Docker not required)")
+                result.wizard_reset = CheckDetail(passed=True, message="Wizard auto-completed")
+            except Exception as e:
+                logger.warning(f"Failed to auto-complete wizard: {e}")
+
         if result.needs_wizard:
             telemetry.capture_event(
                 "wizard_started",
@@ -198,16 +206,6 @@ def check_startup_requirements():
 def check_docker():
     """Check if Docker is installed"""
     try:
-        from searchium.utils.gpu_detector import (
-            is_nvidia_docker_runtime_available,
-            is_nvidia_gpu_available,
-            should_use_gpu_mode,
-        )
-
-        has_gpu_hardware = is_nvidia_gpu_available()
-        has_nvidia_runtime = is_nvidia_docker_runtime_available()
-        gpu_mode_enabled = should_use_gpu_mode()
-
         with db_session() as db:
             repo = WizardStateRepository(db)
             repo.update_docker_check(True)
@@ -216,9 +214,9 @@ def check_docker():
             available=True,
             command="docker",
             version="not required",
-            has_gpu_hardware=has_gpu_hardware,
-            has_nvidia_runtime=has_nvidia_runtime,
-            gpu_mode_enabled=gpu_mode_enabled,
+            has_gpu_hardware=False,
+            has_nvidia_runtime=False,
+            gpu_mode_enabled=False,
             error=None,
         )
     except Exception as e:
@@ -512,136 +510,29 @@ def upgrade_database():
 
 @router.post("/restart-typesense")
 def restart_typesense():
-    """Restart Typesense container with fresh volume to recover from errors"""
-    import shutil
-    import subprocess
-
-    from searchium.core.paths import app_paths
-
-    try:
-        docker_manager = get_docker_manager()
-
-        # Check if docker is available
-        if not docker_manager.is_docker_available():
-            raise HTTPException(
-                status_code=400,
-                detail="Docker not found",
-            )
-
-        # Build commands
-        stop_cmd = [docker_manager.docker_cmd, "compose", "-f", str(docker_manager.compose_file), "stop", "typesense"]
-        rm_cmd = [
-            docker_manager.docker_cmd,
-            "compose",
-            "-f",
-            str(docker_manager.compose_file),
-            "rm",
-            "-f",
-            "-v",
-            "typesense",
-        ]
-        start_cmd = [
-            docker_manager.docker_cmd,
-            "compose",
-            "-f",
-            str(docker_manager.compose_file),
-            "up",
-            "-d",
-            "typesense",
-        ]
-
-        # Stop container first
-        logger.info("Stopping Typesense...")
-        subprocess.run(stop_cmd, capture_output=True, check=False)
-
-        # Remove container
-        logger.info("Removing Typesense container...")
-        subprocess.run(rm_cmd, capture_output=True, check=False)
-
-        # Clear the bind-mounted data directory (except models)
-        # Since we now use a bind mount, we need to clear the host directory
-        typesense_data_dir = app_paths.typesense_data_dir
-        models_dir = app_paths.models_dir
-
-        logger.info(f"Clearing Typesense data directory: {typesense_data_dir}")
-
-        # Remove all contents except the models directory
-        if typesense_data_dir.exists():
-            for item in typesense_data_dir.iterdir():
-                if item != models_dir:
-                    try:
-                        if item.is_dir():
-                            shutil.rmtree(item)
-                        else:
-                            item.unlink()
-                        logger.info(f"Removed: {item}")
-                    except Exception as e:
-                        logger.warning(f"Failed to remove {item}: {e}")
-
-        logger.info("Starting fresh Typesense...")
-        result = subprocess.run(start_cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            error_msg = result.stderr.strip()
-            logger.error(f"Failed to restart Typesense: {error_msg}")
-            return {"success": False, "error": error_msg}
-
-        logger.info("Typesense restarted successfully with cleared data")
-        return {"success": True, "message": "Typesense restarted with cleared data"}
-
-    except Exception as e:
-        logger.error(f"Error restarting Typesense: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
+    """Restart Typesense - no-op, Docker not required"""
+    return {"success": True, "message": "Docker not required"}
 
 @router.get("/collection-logs")
 def stream_collection_logs():
-    """Stream Typesense Docker container logs via SSE"""
+    """Stream Typesense collection logs via SSE"""
 
     import json
 
     def event_generator():
-        """Generate SSE events from Typesense container logs"""
-        docker_manager = get_docker_manager()
-
+        """Generate SSE events from Typesense service manager logs"""
         try:
-            # Check if docker is available
-            if not docker_manager.is_docker_available():
-                yield f"data: {json.dumps({'error': 'Docker not found'})}\n\n"
-                return
-
-            # Build logs command for typesense service
-            logs_cmd = [
-                docker_manager.docker_cmd,
-                "compose",
-                "-f",
-                str(docker_manager.compose_file),
-                "logs",
-                "-f",
-                "--tail=50",
-                "typesense",
-            ]
-
-            # Start streaming logs
-            import subprocess
-
-            proc = subprocess.Popen(logs_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-
-            # Stream output line by line
-            for line in proc.stdout:
-                log_line = line.strip()
-                if log_line:
-                    yield f"data: {json.dumps({'log': log_line, 'timestamp': time.time()})}\n\n"
-
+            from searchium.services.service_manager import get_service_manager
+            service_manager = get_service_manager()
+            logs = service_manager.get_service_logs("typesense")
+            for log in logs:
+                yield f"data: {json.dumps({'log': log.get('message', ''), 'timestamp': log.get('timestamp', time.time())})}\n\n"
+            yield f"data: {json.dumps({'complete': True})}\n\n"
         except Exception as e:
             logger.error(f"Error streaming collection logs: {e}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        finally:
-            if "proc" in locals():
-                proc.terminate()
 
     return sse_response(event_generator())
-
 
 @router.post("/complete")
 def complete_wizard():
