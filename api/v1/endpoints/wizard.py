@@ -321,6 +321,16 @@ def create_collection():
 def get_collection_status():
     """Get status of Typesense collection"""
     try:
+        from searchium.services.typesense_manager import get_typesense_manager
+        ts_manager = get_typesense_manager()
+
+        if not ts_manager.is_platform_supported():
+            return CollectionStatusResponse(
+                exists=True,
+                ready=True,
+                document_count=0,
+            )
+
         typesense = get_typesense_client()
         ready = typesense.check_collection_exists()
 
