@@ -57,7 +57,18 @@ def startup_handler():
                 logger.error("Failed to start Typesense - search will be unavailable")
 
         critical_init()
-        logger.info("Database ready - API starting immediately!")
+
+        # Initialize all services so initialization stream reaches 100%
+        from searchium.core.initialization import (
+            init_typesense_for_wizard,
+            init_tika_for_wizard,
+            init_crawl_manager_for_wizard,
+        )
+        init_typesense_for_wizard()
+        init_tika_for_wizard()
+        init_crawl_manager_for_wizard()
+
+        logger.info("All services initialized")
 
         if settings.debug:
             logger.info("Debug mode enabled: Starting Vite dev server...")
