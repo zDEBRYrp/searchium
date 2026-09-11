@@ -358,25 +358,22 @@ class FlaskUI:
 
         # On Windows, Edge launches a child process and the initial launcher
         # exits immediately, so Popen.wait() would return instantly.
-        # We sleep for a long time and only trigger shutdown when the user
-        # closes the terminal (KeyboardInterrupt) or explicitly stops the app.
+        # Poll every 1s to detect browser close quickly.
         try:
             child_pid = self.browser_pid
             while True:
-                time.sleep(5)
-                # Check if any Edge window is still open for our URL
+                time.sleep(1)
+                if self.__keyboard_interrupt:
+                    break
                 try:
                     proc = psutil.Process(child_pid)
                     if not proc.is_running():
-                        # On Windows, Edge spawns child processes.
-                        # Try to find the actual running Edge child.
                         children = proc.children(recursive=True)
                         if children:
                             child_pid = children[0].pid
                             continue
                         break
                 except psutil.NoSuchProcess:
-                    # Process gone вЂ” look for any Edge with our --app flag
                     found = False
                     for p in psutil.process_iter(['pid', 'name', 'cmdline']):
                         try:
@@ -391,6 +388,17 @@ class FlaskUI:
                     if not found:
                         break
         except KeyboardInterrupt:
+            pass
+
+        # Kill browser process when exiting
+        try:
+            if FLASKWEBGUI_BROWSER_PROCESS and FLASKWEBGUI_BROWSER_PROCESS.poll() is None:
+                FLASKWEBGUI_BROWSER_PROCESS.terminate()
+                try:
+                    FLASKWEBGUI_BROWSER_PROCESS.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    FLASKWEBGUI_BROWSER_PROCESS.kill()
+        except Exception:
             pass
 
         if not self.auto_close:

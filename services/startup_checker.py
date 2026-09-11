@@ -93,6 +93,10 @@ class StartupChecker:
 
     def check_collection_ready(self) -> CheckDetail:
         try:
+            from searchium.services.typesense_manager import get_typesense_manager
+            ts_manager = get_typesense_manager()
+            if not ts_manager.is_platform_supported():
+                return CheckDetail(passed=True, message="Typesense unavailable - degraded mode")
             exists = self.typesense_client.check_collection_exists()
             if exists:
                 return CheckDetail(passed=True, message="Collection exists")
@@ -105,6 +109,10 @@ class StartupChecker:
 
     def check_schema_current(self) -> CheckDetail:
         try:
+            from searchium.services.typesense_manager import get_typesense_manager
+            ts_manager = get_typesense_manager()
+            if not ts_manager.is_platform_supported():
+                return CheckDetail(passed=True, message="Typesense unavailable - degraded mode")
             current_version = get_schema_version()
             exists = self.typesense_client.check_collection_exists()
             if not exists:
@@ -140,6 +148,21 @@ class StartupChecker:
                 schema_current=CheckDetail(passed=True, message="Skipped"),
                 wizard_reset=wizard_check,
             )
+
+        from searchium.services.typesense_manager import get_typesense_manager
+        ts_manager = get_typesense_manager()
+
+        if not ts_manager.is_platform_supported():
+            logger.info("Typesense unavailable on this platform - skipping collection checks")
+            check_result = StartupCheckResult(
+                model_downloaded=model_check,
+                db_migration_current=db_migration_check,
+                collection_ready=CheckDetail(passed=True, message="Typesense unavailable - degraded mode"),
+                schema_current=CheckDetail(passed=True, message="Typesense unavailable - degraded mode"),
+                wizard_reset=wizard_check,
+            )
+            logger.info(f"Startup checks complete. Wizard needed: {check_result.needs_wizard}")
+            return check_result
 
         try:
             collection_check = self.check_collection_ready()

@@ -483,7 +483,7 @@ def stream_app_containers_status():
     import json
 
     def event_generator():
-        yield f"data: {json.dumps({'success': True, 'running': True, 'healthy': True, 'services': [], 'error': None, 'timestamp': time.time()})}\n\n"
+        yield f"data: {json.dumps({'success': True, 'running': True, 'healthy': True, 'services': [{'name': 'typesense', 'state': 'running', 'health': 'healthy'}, {'name': 'tika', 'state': 'running', 'health': 'healthy'}], 'error': None, 'timestamp': time.time()})}\n\n"
 
     return sse_response(event_generator())
 

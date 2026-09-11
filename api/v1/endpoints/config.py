@@ -23,10 +23,16 @@ def get_config():
     This allows dynamic configuration (like API keys) to be passed to the UI.
     """
     from searchium.core.telemetry import telemetry
-    from searchium.services.typesense_client import get_typesense_client
+    from searchium.services.typesense_manager import get_typesense_manager
 
-    client = get_typesense_client()
-    search_only_key = client.get_search_only_api_key()
+    ts_manager = get_typesense_manager()
+
+    if not ts_manager.is_platform_supported():
+        search_only_key = settings.typesense_api_key
+    else:
+        from searchium.services.typesense_client import get_typesense_client
+        client = get_typesense_client()
+        search_only_key = client.get_search_only_api_key()
 
     return {
         "app_version": settings.app_version,
@@ -43,6 +49,6 @@ def get_config():
             "enabled": settings.posthog_enabled,
             "api_key": settings.posthog_project_api_key,
             "host": settings.posthog_host,
-            "device_id": telemetry.distinct_id,  # Share device ID for unified sessions
+            "device_id": telemetry.distinct_id,
         },
     }

@@ -148,8 +148,10 @@ def perform_shutdown(vite_process=None):
 
 def on_shutdown_sync():
     """Sync wrapper for FlaskWebGUI's on_shutdown callback."""
-    logger.info("рџ›‘ Browser closed, initiating shutdown...")
+    logger.info("Browser closed, initiating shutdown...")
     perform_shutdown()
+    import sys
+    os._exit(0)
 
 
 # Create FastAPI application
@@ -305,6 +307,27 @@ def cli_main():
     # Set DEBUG=false to ensure FlaskWebGUI suppresses third-party debug logs
     # This must be set BEFORE importing FlaskWebGUI
     os.environ["DEBUG"] = "false"
+
+    # Handle Ctrl+C properly - close browser and exit
+    import signal
+
+    def signal_handler(sig, frame):
+        logger.info("Interrupt received, shutting down...")
+        try:
+            from searchium.lib.flaskwebgui import FLASKWEBGUI_BROWSER_PROCESS
+            if FLASKWEBGUI_BROWSER_PROCESS and FLASKWEBGUI_BROWSER_PROCESS.poll() is None:
+                FLASKWEBGUI_BROWSER_PROCESS.terminate()
+                try:
+                    FLASKWEBGUI_BROWSER_PROCESS.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    FLASKWEBGUI_BROWSER_PROCESS.kill()
+        except Exception:
+            pass
+        perform_shutdown()
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     port = get_available_port(settings.port)
     logger.info(f"Starting {settings.app_name} on http://localhost:{port}")
